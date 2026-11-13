@@ -41,3 +41,4 @@ tmp/
 /src/webassets/dist/*
 !/src/webassets/dist/.gitkeep
 croc2
+dist/

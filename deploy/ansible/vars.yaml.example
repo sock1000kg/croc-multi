@@ -1,0 +1,7 @@
+# cp vars.yaml.example vars.yaml  (gitignored)
+relay_password: "change-me"
+relay_ports: "9009,9010,9011,9012,9013"
+# Extra relay flags, e.g. "--multi-max-receivers 8" once the hub flags exist.
+relay_extra_args: ""
+# Path of the linux/amd64 binary built by deploy/build.sh
+croc_binary: "{{ playbook_dir }}/../../../dist/croc-linux-amd64"

@@ -1,0 +1,21 @@
+[Unit]
+Description=croc relay (multi-send)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=croc-relay
+Group=croc-relay
+Environment=CROC_PASS={{ relay_password }}
+ExecStart=/usr/local/bin/croc relay --ports {{ relay_ports }} {{ relay_extra_args }}
+Restart=always
+RestartSec=2
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
