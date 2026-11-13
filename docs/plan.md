@@ -3,8 +3,9 @@
 Tài liệu này mô tả phạm vi, kiến trúc và cách triển khai trong **3 tuần**. Việc chia
 cho từng người và các mốc kiểm tra nằm ở [`phan-cong.md`](phan-cong.md).
 
-> `contracts.md` hiện còn là bản cũ (hướng bảng vẽ) và **không còn đúng**. Định dạng gói
-> tin mới được phác thảo ở mục 5 dưới đây; T sẽ viết lại `contracts.md` ở mốc M0.
+> Hợp đồng chi tiết (định dạng gói tin, giao diện Go, dòng lệnh) nằm ở
+> [`contracts.md`](contracts.md); mục 5 dưới đây chỉ là bản phác thảo. T hoàn thiện
+> `contracts.md` ở mốc M0.
 
 ## 1. Mục tiêu
 
@@ -16,14 +17,14 @@ và tải lên 5 lần. Mục tiêu:
 - **Kết thúc khi người nhận cuối cùng nhận xong.**
 - Tốc độ vẫn ở mức tốt (đo và so với croc 1-1 trên cùng đường truyền, xem mục 8).
 - Mã hóa đầu-cuối như croc: relay không đọc được nội dung.
-- Cải tiến sau MVP: người gửi duyệt từng người vào, khóa phòng sau N người, kéo thả
+- Cải tiến sau MVP: người gửi duyệt từng người vào (tên dễ đọc + IP, đuổi thật bằng `KICK`), từ chối người tới sau khi đủ N, kéo thả
   đường dẫn trong terminal, thử lại/nhận bù.
 
 Không làm: bảng vẽ, âm thanh/màn hình trực tiếp, swarm (người nhận gửi tiếp cho nhau),
 dashboard, chế độ `--mode direct` chỉ để so sánh. Lý do bỏ mật khẩu riêng: croc đã có
 `--code CỤM_TỪ_CỦA_BẠN` (ít nhất 6 ký tự), nên người gửi tự chọn bí mật và gửi qua kênh
 khác nếu muốn; mật khẩu thứ hai không thêm bảo mật nếu gửi chung một kênh. Việc **duyệt
-từng người vào** và **khóa phòng** mới là thứ chặn người lạ có mã.
+từng người vào** và **đuổi người bị từ chối** mới là thứ chặn người lạ có mã.
 
 ## 2. Những gì đã xác nhận khi đọc code
 
@@ -74,7 +75,7 @@ từng người vào** và **khóa phòng** mới là thứ chặn người lạ
    MVP; tự nhận dạng code multi là việc Should) vào cùng phòng với vai trò RECEIVER.
 2. **Phòng chờ:** mỗi người nhận vào thì người gửi chạy PAKE với người đó (khung `DIRECT`),
    rồi gửi `session` (manifest + `dataKey`, mã hóa bằng khóa cặp). Có thể bật duyệt từng
-   người. Sau N người thì **khóa phòng**.
+   người. Người gửi tự đếm số người đã duyệt; người tới sau khi đủ N bị `reject` và `KICK`.
 3. **Bắt đầu:** khi đủ N người sẵn sàng (hoặc người gửi nhấn Enter). MVP từ chối người vào
    muộn; Phase 2 thêm "vòng bù" để người vào muộn/lỗi nhận tiếp.
 4. **Truyền:** người gửi đọc từng file, cắt khối 32 KB, mã hóa bằng `dataKey`, gửi khung
@@ -93,8 +94,9 @@ từng người vào** và **khóa phòng** mới là thứ chặn người lạ
   ngược của TCP), nên **người nhận chậm nhất quyết định tốc độ**. Người nhận đứng im quá
   30 giây thì bị loại với `ERROR` và người gửi được báo.
 - Hub chỉ đọc phần **header không mã hóa** của khung.
-- Giới hạn: số người nhận tối đa (mặc định 16), khung ≤ 64 KB, bỏ giới hạn 30 lượt
-  vào/phút của `src/tcp/defaults.go` cho phòng `multi:`, TTL phòng như hiện nay.
+- Giới hạn cấu hình được trên relay (`--multi-max-receivers`, mặc định 16), khung ≤ 64 KB,
+  không chặn theo IP (người cùng NAT phải vào được); chống làm phiền ở phía người gửi
+  (`contracts.md` mục 3.5), TTL phòng như hiện nay.
 - Người nhận không được gửi `DATA`; `DIRECT` của người nhận chỉ đi tới người gửi.
 
 ## 4. Cấu trúc thư mục (mỗi người một vùng)
@@ -109,10 +111,10 @@ từng người vào** và **khóa phòng** mới là thứ chặn người lạ
 | `src/multisend/` | N | Đọc file, cắt khối, mã hóa một lần, phát, chờ N `done`, giới hạn tốc độ |
 | `src/cli/multi.go` + một dòng đăng ký trong `src/cli/cli.go` | N (gửi) / L (nhận) | Cờ `--receivers`, `--multi`, `--approve`, `--timeout` |
 | `src/multirecv/` | L | Nhận, giải mã, ghi an toàn, kiểm tra băm, tiến độ |
-| `scripts/bench/`, `docs/multi-lan-test.md` | L | Benchmark và bài thử mạng LAN thật |
+| `scripts/bench/`, `docs/multi-e2e-test.md` | L | Benchmark và bài thử đầu-cuối từ xa qua relay |
 
 Chỉ có `src/multiwire` và `src/multihub` là hợp đồng giữa nhiều người. Các phần còn lại độc
-lập và dùng hub giả trong bộ nhớ cho đến khi hub thật xong.
+lập và dùng hub trong bộ nhớ trong bộ nhớ cho đến khi hub thật xong.
 
 ## 5. Phác thảo định dạng gói tin (T hoàn thiện thành `contracts.md` ở M0)
 
@@ -129,13 +131,14 @@ Nằm trong khung `comm` có sẵn (`"croc"` + độ dài u32 little-endian + n�
 | 6 | `DATA` | người gửi → hub → mọi người nhận | Khối dữ liệu đã mã hóa |
 | 7 | `PING` | hai chiều | Giữ kết nối, phát hiện chết |
 | 8 | `ERROR` | hub → client | Mã lỗi: `room-locked`, `room-full`, `no-sender`, `kicked-slow` |
+| 9 | `KICK` | người gửi → hub | Đóng ngay kết nối của một thành viên (người bị từ chối) |
 
 **Thông điệp điều khiển** (JSON, trong `DIRECT`): `pake1`, `pake2`, `pake-confirm`,
 `session` (manifest + `dataKey`, mã hóa bằng khóa cặp), `ready`, `done`, `fail`.
 
-**Khối dữ liệu:** nội dung giải mã là `fileIdx u16 | offset u64 | dữ liệu`; mã hóa AEAD bằng
-`dataKey` với nonce là bộ đếm tăng dần của người gửi (không bao giờ dùng lại với cùng
-`dataKey`). T chọn thuật toán (AES-GCM có sẵn trong `crypt`) và ghi vào `contracts.md`.
+**Khối dữ liệu:** nội dung giải mã là `fileIdx u16 | offset u64 | dữ liệu`; mã hóa AES-256-GCM bằng
+`dataKey` qua `crypt.EncryptAEADTo` có sẵn (nonce 12 byte ngẫu nhiên do hàm tự sinh). Chi tiết
+bản ghi, băm cuối file và ghi chú an ninh nằm trong `contracts.md`, mục 4.
 
 ## 6. Dòng lệnh
 
@@ -153,7 +156,7 @@ croc --multi [--relay IP:9009] CODE          # MVP; sau này tự nhận dạng,
 | Người nhận chậm kéo cả phiên | Hàng đợi giới hạn + loại sau 30 giây; ghi rõ là đánh đổi |
 | Relay cũ làm người gửi treo | Bắt buộc chờ `JOIN_ACK`, báo lỗi rõ ràng |
 | Xung đột sửa `tcp.go` / `cli.go` | D giữ đúng một nhánh trong `tcp.go`; phần CLI nằm trong `cli/multi.go`, `cli.go` chỉ thêm một dòng đăng ký, thống nhất ở M0 |
-| Sai sót mật mã (nonce, khóa) | T chịu trách nhiệm `multisession`, nonce là bộ đếm theo phiên, người khác review |
+| Sai sót mật mã (nonce, khóa) | T chịu trách nhiệm `multisession`; dùng `crypt.EncryptAEADTo` (nonce ngẫu nhiên) và một `dataKey` mỗi phiên; người khác review |
 | Con số hiệu năng không có thật | Chỉ nêu số do `scripts/bench` đo trên mạng thật |
 
 ## 8. Tiêu chí chấp nhận (chưa đo, sẽ xác nhận bằng bài thử)
@@ -166,11 +169,13 @@ croc --multi [--relay IP:9009] CODE          # MVP; sau này tự nhận dạng,
 
 ## 9. Mốc thời gian (3 tuần, 4 người)
 
-- **Tuần 1:** M0 (ngày 1–2), rồi M1a–M1d song song; thử chạy thật đầu tiên (M2) khoảng ngày 5.
-- **Tuần 2:** hoàn thành M2, đo M3, dựng Azure M4; bắt đầu Phase 2 Must (duyệt người vào,
-  kéo thả đường dẫn độc lập với làn dữ liệu và vòng bù).
-- **Tuần 3:** nốt Phase 2 Must, tăng cứng hub, biểu đồ benchmark, bài thử LAN thật; đóng băng
-  trước hạn 2 ngày.
+- **Tuần 1 (MVP):** M0 (ngày 1), M1a–M1d song song (ngày 2–4), M2 relay thật (ngày 5–6), M4 Azure và
+  bài thử đầu-cuối từ xa (ngày 6–7). Cuối tuần 1 phải chạy được 1 gửi → 3 nhận qua Azure.
+- **Tuần 2:** đo M3 qua Azure; Phase 2 Must: duyệt người vào + chặn người lạ, kéo thả, tiến độ,
+  tăng cứng hub.
+- **Tuần 3:** làn dữ liệu / vòng bù nếu cần, sửa lỗi, biểu đồ benchmark, chạy lại bài thử
+  đầu-cuối; đóng băng trước hạn 2 ngày.
+- Nếu chỉ có 2 tuần: giữ tuần 1 như trên; tuần 2 làm các việc Must của N và D, bỏ vòng bù.
 
 ## 10. Ghi chú vận hành
 
