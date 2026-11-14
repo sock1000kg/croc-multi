@@ -328,6 +328,8 @@ Do you wish to continue to enable the classic mode? (y/N) `, colorEnabled))
 
 		return receive(c)
 	}
+	
+	registerMulti(app)
 
 	return app
 }
