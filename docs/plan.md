@@ -107,7 +107,7 @@ từng người vào** và **đuổi người bị từ chối** mới là thứ
 | `src/multisession/` | T | PAKE từng người nhận, chuyển `dataKey`, móc duyệt người vào; dùng chung cho hai engine |
 | `src/multihub/` | D | Logic hub thuần |
 | `src/tcp/multi_room.go` + 1 nhánh trong `src/tcp/tcp.go` | D | Gắn hub vào relay (chỗ duy nhất sửa code relay cũ) |
-| `deploy/`, `tools/multibench/` | D | Terraform + Ansible cho relay Azure, người nhận giả |
+| `deploy/`, `tools/faultinject/` | D | Terraform + Ansible cho relay Azure, người nhận giả |
 | `src/multisend/` | N | Đọc file, cắt khối, mã hóa một lần, phát, chờ N `done`, giới hạn tốc độ |
 | `src/cli/multi.go` + một dòng đăng ký trong `src/cli/cli.go` | N (gửi) / L (nhận) | Cờ `--receivers`, `--multi`, `--approve`, `--timeout` |
 | `src/multirecv/` | L | Nhận, giải mã, ghi an toàn, kiểm tra băm, tiến độ |

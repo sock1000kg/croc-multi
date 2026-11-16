@@ -23,7 +23,7 @@ Student + Terraform + Ansible để dựng nhanh relay thử nghiệm.
 
 | Người | Trách nhiệm | Vùng thư mục |
 |---|---|---|
-| **D** | Hub (logic + gắn vào relay), Azure/Terraform/Ansible, người nhận giả, tăng cứng hub | `src/multihub/`, `src/tcp/multi_room.go` (+1 nhánh trong `tcp.go`), `deploy/`, `tools/multibench/` |
+| **D** | Hub (logic + gắn vào relay), Azure/Terraform/Ansible, người nhận giả, tăng cứng hub | `src/multihub/`, `src/tcp/multi_room.go` (+1 nhánh trong `tcp.go`), `deploy/`, `tools/faultinject/` |
 | **T** | Hợp đồng gói tin, PAKE từng người nhận, chuyển `dataKey`, duyệt người vào ở phía mật mã | `src/multiwire/`, `src/multisession/`, `docs/contracts.md` |
 | **N** | Engine người gửi, CLI phía gửi, tiến độ trong terminal, kéo thả đường dẫn, duyệt người vào | `src/multisend/`, `src/cli/multi.go` (phần gửi) |
 | **L** | Engine người nhận, CLI phía nhận, benchmark, bài thử đầu-cuối | `src/multirecv/`, `src/cli/multi.go` (phần nhận), `scripts/bench/`, `docs/multi-e2e-test.md` |
@@ -54,7 +54,7 @@ M3 (đo tốc độ) bắt đầu ngay khi M2 chạy, làm sang tuần 2.
 | Ai | Việc | Bài thử chạy tay |
 |---|---|---|
 | T | Rà soát và chốt `docs/contracts.md` (bản khởi đầu đã có; giải quyết các điểm ở mục 8 của nó); tạo `src/multiwire` (mã hóa/giải mã khung, cấu trúc thông điệp) | `go build ./...` thành công; chương trình nhỏ in ra một khung mẫu dạng hex và đọc lại đúng |
-| D | Khung `src/multihub` + đường truyền trong bộ nhớ trong bộ nhớ; khung `deploy/` | `go run ./tools/multibench --help` chạy được |
+| D | Khung `src/multihub` + đường truyền trong bộ nhớ trong bộ nhớ; khung `deploy/` | `go run ./tools/faultinject --help` chạy được |
 | N | Khung `src/multisend`, `src/cli/multi.go` (cờ `--receivers`, `--approve`, `--timeout`) | `croc send --help` hiện cờ mới |
 | L | Khung `src/multirecv`, cờ `--multi` | `croc --help` hiện cờ mới |
 
@@ -306,7 +306,7 @@ dòng tóm tắt cuối liệt kê đủ từng người.
 
 **Cách làm:** từ chối khung > 64 KB bằng `ERROR bad-frame` rồi đóng; cờ `--max-rooms` đếm
 phòng `multi:` đang mở; log theo mức có sẵn trong `src/logger`; công cụ
-`tools/multibench` có chế độ "người nhận không đọc" và "người nhận chậm" (đọc 1 KB/s).
+`tools/faultinject` có chế độ "người nhận không đọc" (`--mode stall`), "người nhận chậm" (đọc 1 KB/s, `--mode slow`) và "người nhận im lặng" (không trả lời `PING`, `--mode silent`).
 
 **Kiểm chứng:** một người nhận không bao giờ đọc: bị loại trong 30 giây, các máy khác không
 bị ảnh hưởng; gửi khung 1 MB thô vào cổng: relay đóng kết nối, không sập; mở quá `--max-rooms`
