@@ -2,6 +2,7 @@ package multihub
 
 import (
 	"net"
+	"time"
 
 	"github.com/schollz/croc/v11/src/comm"
 )
@@ -47,4 +48,34 @@ func (x commCon) RemoteAddr() string {
 func Pipe() (a, b Conn) {
 	x, y := net.Pipe()
 	return commCon{comm.New(x)}, commCon{comm.New(y)}
+}
+
+// idleConn closes c if nothing arrives for d. Each successful Receive pushes
+// the deadline back.
+type idleConn struct {
+	// embedding: Send/Close/RemoteAddr pass straight through
+	Conn
+	timer *time.Timer
+	d     time.Duration
+}
+
+func (c idleConn) Receive() ([]byte, error) {
+	b, err := c.Conn.Receive()
+	if err == nil {
+		c.timer.Reset(c.d)
+	}
+	return b, err
+}
+
+// touch pushes the idle deadline back without a Receive. The hub calls it when
+// a DATA frame was delivered to this client: a receiver that keeps taking
+// DATA is alive even if it never sends anything back.
+func (c idleConn) touch() {
+	c.timer.Reset(c.d)
+}
+
+// FromComm adapts a relay connection (already past the relay handshake) to
+// Conn, so src/tcp can hand it to Hub.Serve.
+func FromComm(c *comm.Comm) Conn {
+	return commCon{c}
 }

@@ -118,6 +118,8 @@ const (
 	DefaultMaxReceivers = 16
 	DefaultQueueBytes   = 8 << 20 // 8 MB
 	DefaultStallTimeout = 30 * time.Second
+	DefaultPingInterval = 15 * time.Second
+	DefaultIdleTimeout  = 60 * time.Second
 )
 
 // Config holds the hub's limits. A zero field means "use the default".
@@ -133,6 +135,16 @@ type Config struct {
 	// StallTimeout is how long a receiver's buffer may stay full before the
 	// hub drops that receiver.
 	StallTimeout time.Duration
+
+	// PingInterval is how often the hub sends PING to every client. Clients
+	// answer each PING with a PING (contracts.md §2.3), which keeps idle
+	// connections alive through NAT and proves the client is still there.
+	PingInterval time.Duration
+
+	// IdleTimeout closes a connection the hub has heard nothing from for this
+	// long (laptop asleep, Wi-Fi gone: TCP often never reports these).
+	// Must be longer than PingInterval.
+	IdleTimeout time.Duration
 }
 
 type Hub struct {
@@ -155,12 +167,29 @@ func New(cfg Config) *Hub {
 	if cfg.StallTimeout <= 0 {
 		cfg.StallTimeout = DefaultStallTimeout
 	}
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = DefaultIdleTimeout
+	}
+	if cfg.PingInterval <= 0 {
+		cfg.PingInterval = DefaultPingInterval
+	}
+	if cfg.PingInterval >= cfg.IdleTimeout {
+		// Otherwise a client that answers every PING could still time out.
+		cfg.PingInterval = cfg.IdleTimeout / 4
+	}
 	return &Hub{cfg: cfg, rooms: make(map[string]*room)}
 }
 
 func (hub *Hub) Serve(roomName string, c Conn) error {
 	// auto close Conn when Serve returns
 	defer c.Close()
+
+	// Idle timeout: close c if nothing arrives for IdleTimeout. idleConn
+	// resets the timer on every successful Receive, and the close makes the
+	// read loops below fail, so their normal cleanup runs.
+	timer := time.AfterFunc(hub.cfg.IdleTimeout, func() { c.Close() })
+	defer timer.Stop()
+	c = idleConn{Conn: c, timer: timer, d: hub.cfg.IdleTimeout}
 
 	// First frame must be JOIN
 	raw, err := c.Receive()
@@ -251,6 +280,25 @@ func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 		return err
 	}
 
+	// PING the sender every PingInterval until serveSender returns.
+	stopPing := make(chan struct{})
+	defer close(stopPing)
+	go func() {
+		tick := time.NewTicker(hub.cfg.PingInterval)
+		defer tick.Stop()
+		ping := encodeFrame(frame{typ: tPing})
+		for {
+			select {
+			case <-stopPing:
+				return
+			case <-tick.C:
+				if c.Send(ping) != nil {
+					return
+				}
+			}
+		}
+	}()
+
 	// Read loop from Sender
 	for {
 		raw, err := c.Receive()
@@ -279,7 +327,7 @@ func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 			dataFrame := encodeFrame(frame{typ: tData, from: senderID, payload: f.payload})
 			for _, m := range localMembers {
 				if err := hub.enqueue(m, dataFrame); errors.Is(err, errStalled) {
-					hub.dropMember(hubRoom, m.id, 1, true) // 1 = kicked for being slow
+					hub.dropMember(hubRoom, m.id, leftSlow, true)
 				}
 			}
 
@@ -351,6 +399,14 @@ func (hub *Hub) serveRecceiver(roomName string, c Conn) error {
 	hubRoom.members[m.id] = m
 	hub.mu.Unlock()
 
+	// A delivered DATA frame proves the receiver is alive (see idleConn.touch).
+	// Only DATA counts: a dead peer's kernel buffer swallows tiny PINGs for a
+	// long time, but DATA fills it quickly and then the stall check takes over.
+	touch := func() {}
+	if ic, ok := c.(idleConn); ok {
+		touch = ic.touch
+	}
+
 	// Writer goroutine: the ONLY place that calls m.conn.Send.
 	// nil in the queue = "close after this" (the sender-gone cleanup in serveSender uses it).
 	go func() {
@@ -359,6 +415,9 @@ func (hub *Hub) serveRecceiver(roomName string, c Conn) error {
 		for f := range m.queue {
 			if f == nil || m.conn.Send(f) != nil {
 				return
+			}
+			if f[0] == tData {
+				touch()
 			}
 		}
 	}()
@@ -369,7 +428,27 @@ func (hub *Hub) serveRecceiver(roomName string, c Conn) error {
 	binary.LittleEndian.PutUint16(ack[1:3], m.id)
 	_ = hub.enqueue(m, encodeFrame(frame{typ: tJoinAck, payload: ack}))
 
-	// 4. Tell the sender. Payload: memberID u16 | addrLen u8 | addr
+	// PING this receiver every PingInterval through its queue, until its
+	// writer goroutine exits (m.gone). If the queue is full, DATA is flowing
+	// and a PING adds nothing, so skip it instead of blocking.
+	go func() {
+		tick := time.NewTicker(hub.cfg.PingInterval)
+		defer tick.Stop()
+		ping := encodeFrame(frame{typ: tPing})
+		for {
+			select {
+			case <-m.gone:
+				return
+			case <-tick.C:
+				select {
+				case m.queue <- ping: // try to put a PING in this receiver's queue
+				default: // if the queue is full, give up right now
+				}
+			}
+		}
+	}()
+
+	// Tell the sender. Payload: memberID u16 | addrLen u8 | addr
 	addr := c.RemoteAddr()
 	if len(addr) > 255 {
 		addr = addr[:255] // length must fit in one byte
@@ -379,12 +458,20 @@ func (hub *Hub) serveRecceiver(roomName string, c Conn) error {
 	joined = append(joined, addr...)
 	_ = hubRoom.sender.Send(encodeFrame(frame{typ: tMemberJoined, to: senderID, payload: joined}))
 
-	// 5. Read loop: receivers may only send DIRECT (to the sender) and PING.
+	// Read loop: receivers may only send DIRECT (to the sender) and PING.
 	for {
 		raw, err := c.Receive()
 		if err != nil {
 			// No-op if a KICK or a stall kick already dropped this member.
 			hub.dropMember(hubRoom, m.id, leftQuit, true)
+			// Wake the writer so it exits and closes m.gone. Without this, a
+			// writer waiting on an empty queue would wait forever (goroutine
+			// leak). If the queue is full, the writer is mid-Send on the
+			// closed conn and exits on its own.
+			select {
+			case m.queue <- nil:
+			default:
+			}
 			return err
 		}
 		f, err := decodeFrame(raw)

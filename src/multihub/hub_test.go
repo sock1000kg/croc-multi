@@ -71,8 +71,9 @@ func defaultConfig() multihub.Config {
 	return multihub.Config{MaxReceivers: 16, QueueBytes: 8 << 20, StallTimeout: 30 * time.Second}
 }
 
-// client is one participant whose frames are read in the background, so the
-// hub never sees it as a slow reader.
+// client is one well-behaved participant: its frames are read in the
+// background, so the hub never sees it as a slow reader, and it answers every
+// PING with a PING, as contracts.md §2.3 requires.
 type client struct {
 	t      *testing.T
 	conn   multihub.Conn
@@ -98,9 +99,12 @@ func connect(t *testing.T, h *multihub.Hub, room string) *client {
 			if err != nil {
 				return
 			}
-			if f := decode(raw); f.typ != tPing {
-				c.frames <- f
+			f := decode(raw)
+			if f.typ == tPing {
+				_ = c.conn.Send(encode(frame{typ: tPing}))
+				continue
 			}
+			c.frames <- f
 		}
 	}()
 	return c
@@ -382,5 +386,90 @@ func TestStalledReceiverIsDroppedOthersFinish(t *testing.T) {
 		for range n {
 			r.expect(tData)
 		}
+	}
+}
+
+func TestSilentClientIsDroppedAnsweringClientStays(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.PingInterval = 50 * time.Millisecond
+	cfg.IdleTimeout = 300 * time.Millisecond
+	h := multihub.New(cfg)
+	room := roomName(t)
+	sender := joinSender(t, h, room, 2)
+	good, _ := joinReceiver(t, h, room)
+	sender.expect(tMemberJoined)
+
+	// The silent receiver reads everything (so it is not "slow") but never
+	// sends anything back, like a client that ignores PING or has gone dead.
+	silent := dial(t, h, room)
+	if err := silent.Send(encode(frame{typ: tJoin, payload: joinPayload(roleReceiver, 0)})); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := silent.Receive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	silentID := ackID(t, decode(raw))
+	sender.expect(tMemberJoined)
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		for {
+			if _, err := silent.Receive(); err != nil {
+				return
+			}
+		}
+	}()
+
+	// MEMBER_LEFT payload: memberID u16 | reason u8 (0 = left or connection lost).
+	left := sender.expect(tMemberLeft)
+	if want := append(u16(silentID), 0); !bytes.Equal(left.payload, want) {
+		t.Fatalf("MEMBER_LEFT payload %x, want %x", left.payload, want)
+	}
+	select {
+	case <-closed:
+	case <-time.After(wait):
+		t.Fatal("hub did not close the silent connection")
+	}
+
+	// Several idle timeouts have passed, yet the sender and the receiver that
+	// answer PINGs are still connected.
+	time.Sleep(2 * cfg.IdleTimeout)
+	sender.send(frame{typ: tData, payload: []byte("still here")})
+	good.expect(tData)
+}
+
+func TestReceiverTakingDataIsNotIdle(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.PingInterval = 50 * time.Millisecond
+	cfg.IdleTimeout = 300 * time.Millisecond
+	h := multihub.New(cfg)
+	room := roomName(t)
+	sender := joinSender(t, h, room, 1)
+
+	// This receiver reads everything but never sends a byte back, not even
+	// PING replies. While DATA keeps reaching it, it is clearly alive.
+	r := dial(t, h, room)
+	if err := r.Send(encode(frame{typ: tJoin, payload: joinPayload(roleReceiver, 0)})); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			if _, err := r.Receive(); err != nil {
+				return
+			}
+		}
+	}()
+	sender.expect(tMemberJoined)
+
+	// Stream DATA for several idle timeouts.
+	for end := time.Now().Add(4 * cfg.IdleTimeout); time.Now().Before(end); {
+		sender.send(frame{typ: tData, payload: []byte("chunk")})
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case f := <-sender.frames:
+		t.Fatalf("receiver taking DATA was treated as idle: sender got frame type %d", f.typ)
+	default:
 	}
 }
