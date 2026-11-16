@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/schollz/croc/v11/src/multihub"
 )
 
 // TODO: maybe export from logger library?
@@ -146,6 +148,30 @@ func WithFastAdmission(capabilities *RelayCapabilitySet) serverOptsFunc {
 		}
 		s.fastAdmission = capabilities
 		capabilities.registerPort()
+		return nil
+	}
+}
+
+// WithMultiHub sets the hub that serves "multi:" rooms. Pass the same hub to
+// every port of one relay process so they share rooms.
+func WithMultiHub(hub *multihub.Hub) serverOptsFunc {
+	return func(s *server) error {
+		if hub == nil {
+			return fmt.Errorf("multi-send hub is required")
+		}
+		s.multiHub = hub
+		return nil
+	}
+}
+
+// WithMultiJoinRate sets the joins per minute allowed per source IP and per
+// room for "multi:" rooms.
+func WithMultiJoinRate(perMinute int) serverOptsFunc {
+	return func(s *server) error {
+		if perMinute <= 0 {
+			return fmt.Errorf("multi-send join rate must be positive")
+		}
+		s.multiJoinRate = perMinute
 		return nil
 	}
 }
