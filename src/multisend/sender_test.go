@@ -103,7 +103,7 @@ func TestM1c_SenderEngine(t *testing.T) {
 	receivers := make([]*receiverState, numReceivers)
 	receiverChans := make([]chan []byte, numReceivers)
 
-	for i := 0; i < numReceivers; i++ {
+	for i := range numReceivers {
 		rxDir := filepath.Join(tempDir, fmt.Sprintf("receiver_%d", i+1))
 		if err := os.MkdirAll(rxDir, 0o700); err != nil {
 			t.Fatalf("tạo thư mục receiver thất bại: %v", err)
@@ -118,7 +118,7 @@ func TestM1c_SenderEngine(t *testing.T) {
 
 	// Hub in-memory chuyển tiếp: nhận 1 chunk từ sender, sao chép gửi cho cả 3 receivers
 	emit := func(cipherChunk []byte) error {
-		for i := 0; i < numReceivers; i++ {
+		for i := range numReceivers {
 			packet := make([]byte, len(cipherChunk))
 			copy(packet, cipherChunk)
 			receiverChans[i] <- packet
@@ -133,7 +133,7 @@ func TestM1c_SenderEngine(t *testing.T) {
 		t.Fatalf("khởi tạo AES-GCM thất bại: %v", err)
 	}
 
-	for i := 0; i < numReceivers; i++ {
+	for i := range numReceivers {
 		wg.Add(1)
 		go func(rx *receiverState, ch <-chan []byte) {
 			defer wg.Done()
@@ -206,7 +206,7 @@ func TestM1c_SenderEngine(t *testing.T) {
 	}
 
 	// Đóng các kênh sau khi phát xong để receiver dừng vòng lặp
-	for i := 0; i < numReceivers; i++ {
+	for i := range numReceivers {
 		close(receiverChans[i])
 	}
 
@@ -231,6 +231,9 @@ func TestM1c_SenderEngine(t *testing.T) {
 
 	// Tiêu chuẩn 2: Số byte người gửi tải lên ≈ kích thước file (KHÔNG gấp 3)
 	// (Chỉ tăng một chút do metadata kind/offset và AEAD overhead nonce 12B + tag 16B)
+	// Real overhead per 32 KB chunk is 11 (record header) + 12 (nonce) + 16 (GCM
+	// tag) = 39 bytes ≈ 0.12%, plus 63 bytes for file-end and 29 for all-end.
+	// 15% is a loose bound: the point is to catch "uploaded N times" (≥ 200%).
 	maxExpectedUpload := int64(float64(fileSize) * 1.15) // tối đa +15% cho overhead
 	t.Logf("Tổng byte người gửi tải lên: %d bytes (File gốc: %d bytes)", totalBytesSent, fileSize)
 	if totalBytesSent < int64(fileSize) {
