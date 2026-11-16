@@ -1,6 +1,6 @@
 module github.com/schollz/croc/v11
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
@@ -32,7 +32,7 @@ require (
 	golang.org/x/text v0.43.0
 	golang.org/x/time v0.16.0
 	gvisor.dev/gvisor v0.0.0-20260926034703-66ed76bcb72f
-	tailscale.com v1.104.5
+	tailscale.com v1.104.7
 )
 
 require (
@@ -104,7 +104,7 @@ require (
 	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc // indirect
 	github.com/tailscale/web-client-prebuilt v0.0.0-20260917222731-e0ed2d0d0fea // indirect
 	github.com/tailscale/wf v0.0.0-20240214030419-6fbb0a674ee6 // indirect
-	github.com/tailscale/wireguard-go v0.0.0-20260928213032-417aef361226 // indirect
+	github.com/tailscale/wireguard-go v0.0.0-20261106233718-9e0ab45c16ca // indirect
 	github.com/tailscale/xnet v0.0.0-20240729143630-8497ac4dab2e // indirect
 	github.com/tscholl2/siec v0.0.0-20240310163802-c2c6f6198406 // indirect
 	github.com/u-root/u-root v0.16.0 // indirect
