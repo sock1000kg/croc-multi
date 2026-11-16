@@ -67,13 +67,15 @@ gửi), `DATA` phát cho mọi người nhận, hàng đợi giới hạn mỗi 
 quá 30 giây, đuổi thành viên theo lệnh `KICK` của người gửi, khóa khi có `DATA` đầu tiên.
 
 **Cách làm:**
-- Gói thuần Go, không import `net`: nhận `multihub.Conn` (đọc/ghi khung) nên chạy được với
-  `net.Pipe` hoặc kênh trong bộ nhớ.
+- Logic hub không đụng tới mạng thật: chỉ làm việc với `multihub.Conn` (đọc/ghi khung).
+  `multihub.Pipe()` dựng cặp `Conn` trong bộ nhớ từ `net.Pipe` bọc bằng `comm.Comm`.
 - Mỗi phòng một goroutine đọc từ người gửi; mỗi người nhận một goroutine ghi, đọc từ hàng
-  đợi có giới hạn (~8 MB, đếm theo byte). Hàng đợi đầy thì `DATA` của người gửi bị chặn
-  (đó chính là backpressure; không cần cơ chế riêng).
-- Mỗi người nhận có đồng hồ "lần cuối ghi được"; goroutine ghi dùng `SetWriteDeadline` 30 giây,
-  hết hạn thì gửi `ERROR kicked-slow`, đóng, báo `MEMBER_LEFT` cho người gửi.
+  đợi có giới hạn (kênh `QueueBytes / 32 KB` khung, ≈ 8 MB). Hàng đợi đầy thì `DATA` của người
+  gửi bị chặn (đó chính là backpressure; không cần cơ chế riêng).
+- Loại người nhận chậm: khi hub đưa khung vào hàng đợi đã đầy, nó chờ tối đa `StallTimeout`
+  (30 giây); hết hạn thì đóng kết nối người đó (lệnh `Send` đang kẹt trả lỗi, goroutine ghi
+  thoát) và báo `MEMBER_LEFT` lý do 1 cho người gửi. Không dùng `SetWriteDeadline`: mỗi lần
+  `comm.Comm` đọc nó gọi `SetDeadline(time.Time{})`, xóa luôn hạn ghi.
 - Hub chỉ đọc phần đầu khung (`type/from/to`), không giải mã payload.
 
 **Kiểm chứng:** `go run ./tools/hubdemo` (D viết) chạy 1 người gửi + 3 người nhận trong cùng
