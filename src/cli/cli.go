@@ -20,6 +20,7 @@ import (
 	"github.com/schollz/croc/v11/src/croc"
 	log "github.com/schollz/croc/v11/src/logger"
 	"github.com/schollz/croc/v11/src/models"
+	"github.com/schollz/croc/v11/src/multihub"
 	"github.com/schollz/croc/v11/src/publicrelay"
 	"github.com/schollz/croc/v11/src/storeclient"
 	"github.com/schollz/croc/v11/src/tcp"
@@ -175,6 +176,10 @@ func newApp() *cli.App {
 				&cli.IntFlag{Name: "source-join-limit", Value: tcp.DEFAULT_SOURCE_JOIN_LIMIT, Usage: "maximum room joins per source IP in the admission window", EnvVars: []string{"CROC_SOURCE_JOIN_LIMIT"}},
 				&cli.IntFlag{Name: "room-join-limit", Value: tcp.DEFAULT_ROOM_JOIN_LIMIT, Usage: "maximum joins per room in the admission window", EnvVars: []string{"CROC_ROOM_JOIN_LIMIT"}},
 				&cli.DurationFlag{Name: "join-limit-window", Value: tcp.DEFAULT_JOIN_LIMIT_WINDOW, Usage: "sliding window for relay admission limits", EnvVars: []string{"CROC_JOIN_LIMIT_WINDOW"}},
+				&cli.IntFlag{Name: "multi-max-receivers", Value: multihub.DefaultMaxReceivers, Usage: "maximum receivers per multi-send room (1-255)", EnvVars: []string{"CROC_MULTI_MAX_RECEIVERS"}},
+				&cli.IntFlag{Name: "multi-queue-mb", Value: multihub.DefaultQueueBytes >> 20, Usage: "outgoing buffer per multi-send receiver, in MB", EnvVars: []string{"CROC_MULTI_QUEUE_MB"}},
+				&cli.DurationFlag{Name: "multi-stall-timeout", Value: multihub.DefaultStallTimeout, Usage: "drop a multi-send receiver whose buffer stays full this long", EnvVars: []string{"CROC_MULTI_STALL_TIMEOUT"}},
+				&cli.IntFlag{Name: "multi-join-rate", Value: tcp.DEFAULT_MULTI_JOIN_RATE, Usage: "multi-send room joins per minute per source IP", EnvVars: []string{"CROC_MULTI_JOIN_RATE"}},
 			},
 		},
 		{
@@ -1195,6 +1200,29 @@ func relay(c *cli.Context) (err error) {
 	if joinLimitWindow <= 0 {
 		return fmt.Errorf("--join-limit-window must be positive")
 	}
+	multiMaxReceivers := c.Int("multi-max-receivers")
+	if multiMaxReceivers < 1 || multiMaxReceivers > 255 {
+		return fmt.Errorf("--multi-max-receivers must be between 1 and 255")
+	}
+	multiQueueMB := c.Int("multi-queue-mb")
+	if multiQueueMB <= 0 {
+		return fmt.Errorf("--multi-queue-mb must be positive")
+	}
+	multiStallTimeout := c.Duration("multi-stall-timeout")
+	if multiStallTimeout <= 0 {
+		return fmt.Errorf("--multi-stall-timeout must be positive")
+	}
+	multiJoinRate := c.Int("multi-join-rate")
+	if multiJoinRate <= 0 {
+		return fmt.Errorf("--multi-join-rate must be positive")
+	}
+	// One hub for every port, so a multi-send room is the same room whichever
+	// relay port a client used.
+	multiHub := multihub.New(multihub.Config{
+		MaxReceivers: multiMaxReceivers,
+		QueueBytes:   multiQueueMB << 20,
+		StallTimeout: multiStallTimeout,
+	})
 	debugString := "info"
 	if c.Bool("debug") {
 		debugString = "debug"
@@ -1273,6 +1301,8 @@ func relay(c *cli.Context) (err error) {
 				tcp.WithHandshakeTimeout(handshakeTimeout),
 				tcp.WithAdmissionLimits(sourceJoinLimit, roomJoinLimit, joinLimitWindow),
 				tcp.WithFastAdmission(capabilitySet),
+				tcp.WithMultiHub(multiHub),
+				tcp.WithMultiJoinRate(multiJoinRate),
 				tcp.WithCtx(c.Context),
 			)
 			if err != nil {
@@ -1293,6 +1323,8 @@ func relay(c *cli.Context) (err error) {
 		tcp.WithHandshakeTimeout(handshakeTimeout),
 		tcp.WithAdmissionLimits(sourceJoinLimit, roomJoinLimit, joinLimitWindow),
 		tcp.WithFastAdmission(capabilitySet),
+		tcp.WithMultiHub(multiHub),
+		tcp.WithMultiJoinRate(multiJoinRate),
 		tcp.WithCtx(c.Context),
 		tcp.WithRoomPairedCallback(roomPaired),
 		tcp.WithRoomProtocolCallback(roomProtocol),

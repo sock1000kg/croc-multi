@@ -19,6 +19,7 @@ import (
 	"github.com/schollz/croc/v11/src/comm"
 	"github.com/schollz/croc/v11/src/crypt"
 	"github.com/schollz/croc/v11/src/message"
+	"github.com/schollz/croc/v11/src/multihub"
 	"github.com/schollz/croc/v11/src/redact"
 )
 
@@ -46,6 +47,13 @@ type server struct {
 	joinLimitWindow               time.Duration
 	admissionLimits               *admissionLimiter
 	fastAdmission                 *RelayCapabilitySet
+
+	// Multi-send (multi_room.go). One hub can be shared by every port of a
+	// relay process with WithMultiHub.
+	multiHub           *multihub.Hub
+	multiJoinRate      int
+	multiAdmission     *admissionLimiter
+	multiAdmissionOnce sync.Once
 
 	// stopRoomCleanup chan struct{}
 	// replaced by stop ctx.go
@@ -104,6 +112,8 @@ func newDefaultServer() *server {
 	s.roomJoinLimit = DEFAULT_ROOM_JOIN_LIMIT
 	s.joinLimitWindow = DEFAULT_JOIN_LIMIT_WINDOW
 	s.debugLevel = DEFAULT_LOG_LEVEL
+	s.multiHub = multihub.New(multihub.Config{})
+	s.multiJoinRate = DEFAULT_MULTI_JOIN_RATE
 	s.started = make(chan struct{})
 	// s.stopRoomCleanup = make(chan struct{}) replaced by stop
 	s.stop = newStop(context.Background())
@@ -589,6 +599,9 @@ func (s *server) clientCommunication(c *comm.Comm, handshake handshakeResult) (r
 			return encryptErr
 		}
 		return c.Send(encrypted)
+	}
+	if isMultiRoom(room) {
+		return room, s.serveMultiRoom(c, room, sendAdmission)
 	}
 	if s.admissionLimits == nil {
 		s.admissionLimits = newAdmissionLimiter(s.sourceJoinLimit, s.roomJoinLimit, s.joinLimitWindow)

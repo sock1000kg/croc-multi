@@ -40,9 +40,9 @@ type u8 | flags u8 | from u16 | to u16 | payload
 | `type` | Tên | Chiều | Payload |
 |---|---|---|---|
 | 1 | `JOIN` | client → hub | `version u8 \| role u8 (1=gửi, 2=nhận) \| maxReceivers u8` (`maxReceivers` chỉ có nghĩa với người gửi) |
-| 2 | `JOIN_ACK` | hub → client | `version u8 \| memberID u16 \| maxReceivers u8` (`maxReceivers` là giá trị hub **thực sự áp dụng**; người gửi từ chối `--receivers` lớn hơn) |
+| 2 | `JOIN_ACK` | hub → client | `version u8 \| memberID u16 \| maxReceivers u8` (`maxReceivers` là giá trị hub **thực sự áp dụng** cho phòng: bằng giá trị người gửi xin trong `JOIN` nếu nó từ 1 tới `--multi-max-receivers`, ngược lại (0 hoặc lớn hơn) bằng `--multi-max-receivers`; người gửi từ chối `--receivers` lớn hơn) |
 | 3 | `MEMBER_JOINED` | hub → người gửi | `memberID u16 \| địa chỉ từ xa (chuỗi, độ dài u8)` |
-| 4 | `MEMBER_LEFT` | hub → người gửi | `memberID u16 \| lý do u8` (0=thoát, 1=bị loại chậm, 2=lỗi mạng) |
+| 4 | `MEMBER_LEFT` | hub → người gửi | `memberID u16 \| lý do u8` (0=thoát, mất kết nối hoặc im lặng quá 60 giây, 1=bị loại chậm, 2=lỗi mạng: dự trữ, hub hiện không dùng vì không phân biệt được với 0) |
 | 5 | `DIRECT` | người nhận → người gửi, hoặc người gửi → một người nhận | Thông điệp điều khiển (mục 3), **tới nhận thì `to` = mã người nhận; từ người nhận thì hub tự đặt `to` = 1** |
 | 6 | `DATA` | người gửi → hub → **mọi** người nhận | Bản mã (mục 4) |
 | 7 | `PING` | hub ↔ client | Rỗng |
@@ -54,9 +54,9 @@ type u8 | flags u8 | from u16 | to u16 | payload
 | Mã | Tên | Ý nghĩa |
 |---|---|---|
 | 1 | `room-locked` | Phòng đã bắt đầu gửi dữ liệu nên không nhận thêm người |
-| 2 | `room-full` | Vượt số người nhận tối đa của hub |
+| 2 | `room-full` | Vượt số người nhận tối đa của phòng (`maxReceivers` trong `JOIN_ACK` của người gửi) |
 | 3 | `no-sender` | Chưa có người gửi trong phòng |
-| 4 | `kicked-slow` | Bị loại vì đứng im quá 30 giây |
+| 4 | `kicked-slow` | Dự trữ. Hub hiện **không gửi** mã này: người nhận bị loại vì chậm chỉ thấy kết nối bị đóng (mục 2.3) |
 | 5 | `bad-frame` | Khung sai định dạng, quá lớn hoặc không được phép |
 | 6 | `bad-version` | Phiên bản giao thức không khớp |
 | 7 | `sender-gone` | Người gửi đã thoát, phòng đóng |
@@ -66,8 +66,9 @@ type u8 | flags u8 | from u16 | to u16 | payload
 - Chỉ người gửi được gửi `DATA`. Người nhận gửi `DATA` thì hub trả `bad-frame`.
 - `DIRECT` từ người nhận chỉ tới người gửi; `DIRECT` từ người gửi tới đúng một người nhận.
   Người nhận **không** gửi được cho người nhận khác.
-- **Người nhận vào trước khi có người gửi:** hub trả `no-sender`; client thử lại mỗi 1 giây
-  trong tối đa 30 giây.
+- **Người nhận vào trước khi có người gửi:** hub trả `no-sender`; client thử lại mỗi 5 giây
+  trong tối đa 30 giây (6 lần). Mỗi lần thử tính vào giới hạn 120 lượt vào/phút theo IP, nên
+  nhịp 5 giây cho phép tới 10 người nhận chung một IP (NAT) cùng chờ.
 - **Khóa phòng ở hub:** chỉ một quy tắc tự động: sau khi người gửi gửi `DATA` đầu tiên, hub
   trả `room-locked` cho `JOIN` mới (người vào muộn cũng không giải mã được gì).
 - **Chặn người lạ là việc của người gửi** (không có khung `LOCK`): người gửi duyệt từng
@@ -77,21 +78,31 @@ type u8 | flags u8 | from u16 | to u16 | payload
   người đó cố giữ máy. Chỉ `reject` thôi là chưa đủ vì nó chỉ là một thông điệp.
 - Hub không tự khóa theo số người: chỗ trống do người bị `KICK` hoặc tự rời được nhả lại.
 - Hết `--timeout` mà chưa bắt đầu thì người gửi thoát, hub đóng phòng (`sender-gone`).
-- **Áp lực ngược:** mỗi người nhận có hàng đợi gửi ra khoảng **8 MB**. Khi bất kỳ hàng đợi
-  nào đầy, hub ngừng đọc từ người gửi. Người nhận mà hàng đợi đầy và **không đọc được byte
-  nào trong 30 giây** bị loại: hub gửi `ERROR kicked-slow` cho người đó, `MEMBER_LEFT` (lý do
-  1) cho người gửi.
-- `PING`: hub gửi mỗi 15 giây; không thấy dữ liệu nào từ một client trong 60 giây thì coi là
-  chết. Client có thể gửi `PING` bất cứ lúc nào để giữ kết nối.
+- **Áp lực ngược:** mỗi người nhận có hàng đợi gửi ra khoảng **8 MB**, tính theo số khung
+  (`QueueBytes / 32 KB`, tức 256 khung với 8 MB, vì mỗi khung `DATA` ≈ 32 KB). Khi bất kỳ
+  hàng đợi nào đầy, hub ngừng đọc từ người gửi. Hàng đợi của một người nhận **đầy liên tục
+  trong 30 giây** (không nhận thêm được khung nào) thì người đó bị loại: hub **đóng kết nối**
+  của người đó (không gửi `ERROR kicked-slow`, vì người không đọc thì cũng không nhận được nó)
+  và gửi `MEMBER_LEFT` (lý do 1) cho người gửi. Việc kiểm tra chỉ chạy khi hub đang cố đưa
+  khung vào hàng đợi đó.
+- `PING`: hub gửi mỗi 15 giây; không nhận được khung nào từ một client trong 60 giây thì coi
+  là chết: hub đóng kết nối (người nhận: `MEMBER_LEFT` lý do 0 cho người gửi; người gửi:
+  phòng đóng, `sender-gone`).
+  - **Client phải trả lời mỗi `PING` của hub bằng một `PING`** (khung rỗng, `to` = 0). Đây là
+    cách duy nhất để một client đang chờ (chờ PAKE, chờ duyệt, chờ người gửi bấm Enter) cho
+    hub biết nó còn sống; người nhận không gửi gì thì bị loại sau 60 giây.
+  - Hub **không** trả lời `PING` của client (tránh hai bên trả lời nhau mãi). Client vẫn có
+    thể tự gửi `PING` bất cứ lúc nào để giữ kết nối.
 - Người gửi thoát: hub gửi `ERROR sender-gone` cho mọi người nhận rồi đóng phòng.
 - Giới hạn cấu hình được trên `croc relay`: `--multi-max-receivers` (mặc định **16**),
   `--multi-queue-mb` (8), `--multi-stall-timeout` (30s); khung ≤ 64 KB.
 - **Hub không phạt theo IP.** Nhiều người có thể chung một IP (NAT của trường, quán cà phê),
   và tên phòng là băm của code nên ai tới được phòng đều đã biết code; hub không có cách đúng
   để phân biệt người lạ với bạn bè. Chống làm phiền là việc của người gửi (mục 3.5).
-- Phòng `multi:` vẫn chịu giới hạn lượt vào/phút theo IP của `src/tcp/defaults.go` như một
-  lớp chống lũ kết nối để bảo vệ tài nguyên relay, ngưỡng nâng lên **120/phút** và đặt
-  được bằng `--multi-join-rate`; nó không phải công cụ chặn người.
+- Phòng `multi:` có giới hạn lượt vào/phút riêng (bộ giới hạn của `src/tcp/admission.go`,
+  thay cho giới hạn của phòng 1-1) như một lớp chống lũ kết nối để bảo vệ tài nguyên relay:
+  **120/phút** theo IP và 120/phút theo phòng, đặt được bằng `--multi-join-rate`; nó không
+  phải công cụ chặn người.
 
 ## 3. Thông điệp điều khiển (nằm trong `DIRECT`)
 
@@ -236,8 +247,10 @@ type Conn interface {
     RemoteAddr() string
 }
 
+// Trường bằng 0 thì New dùng mặc định (DefaultMaxReceivers, DefaultQueueBytes,
+// DefaultStallTimeout).
 type Config struct {
-    MaxReceivers int           // mặc định 16, đặt bằng --multi-max-receivers
+    MaxReceivers int           // mặc định 16, tối đa 255, đặt bằng --multi-max-receivers
     QueueBytes   int           // mặc định 8 MB mỗi người nhận
     StallTimeout time.Duration // mặc định 30s
 }
@@ -250,6 +263,8 @@ func New(cfg Config) *Hub
 func (h *Hub) Serve(room string, c Conn) error
 
 // Pipe tạo cặp Conn nối nhau trong bộ nhớ, dùng cho test và hub trong bộ nhớ.
+// Dựng từ net.Pipe() bọc bằng comm.Comm, nên dùng đúng cách đóng khung "croc" của
+// relay thật. net.Pipe không có bộ đệm: Send chặn tới khi đầu kia Receive.
 func Pipe() (a, b Conn)
 ```
 
