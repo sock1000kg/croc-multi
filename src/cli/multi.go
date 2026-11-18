@@ -3,9 +3,12 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/schollz/croc/v11/internal/cli"
+	"github.com/schollz/croc/v11/src/multirecv"
+	"github.com/schollz/croc/v11/src/multisend"
 )
 
 // registerMulti là hàm cầu nối duy nhất được gọi từ newApp() trong src/cli/cli.go.
@@ -74,10 +77,7 @@ func sendMulti(c *cli.Context) error {
 		return errors.New("cần chỉ định ít nhất một file hoặc văn bản (--text) để gửi")
 	}
 
-	fmt.Printf("[multi-send] Sẵn sàng gửi cho %d người nhận (approve=%v, timeout=%v)\n", receivers, approve, timeout)
-
-	// TODO (M1c): Gọi engine gửi trong src/multisend
-	return nil
+	return multisend.Send(c.Context, multisend.SendOptions{Files: files, Receivers: receivers, Approve: approve, Timeout: timeout, Relay: c.String("relay"), RelayPass: c.String("pass"), Code: c.String("code")})
 }
 
 // ============================================================================
@@ -106,6 +106,10 @@ func registerMultiRecv(app *cli.App) {
 
 // receiveMulti là hàm điều khiển chính phía nhận (L sẽ hoàn thiện ở M1d)
 func receiveMulti(c *cli.Context) error {
-	// TODO (L - M1d): Gọi engine nhận trong src/multirecv
-	return errors.New("chế độ multi-receive chưa sẵn sàng (chờ M1d)")
+	if c.NArg() != 1 {
+		return errors.New("cần chỉ định một code để nhận multi-send")
+	}
+	err := multirecv.Receive(c.Context, multirecv.ReceiveOptions{Code: c.Args().First(), OutDir: c.String("out"), Relay: c.String("relay"), RelayPass: c.String("pass"), Progress: func(bytes, total int64) { fmt.Fprintf(os.Stderr, "\r%d / %d bytes", bytes, total) }})
+	fmt.Fprintln(os.Stderr)
+	return err
 }
