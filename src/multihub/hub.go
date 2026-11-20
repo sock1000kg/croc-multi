@@ -1,3 +1,20 @@
+// Package multihub is the relay side of croc's 1-to-N multi-send mode (owner:
+// D, milestone M1a). The relay (src/tcp/multi_room.go) hands every connection
+// that asked for a "multi:" room to Hub.Serve.
+//
+// A room holds one sender (member ID 1) and up to N receivers (IDs 2, 3, ...).
+// The hub only routes; it never decrypts anything:
+//
+//	DATA    sender → every receiver (one upload, N copies)
+//	DIRECT  sender ↔ one receiver   (PAKE, session key, ready/done/fail)
+//	KICK    sender → hub            (close one receiver)
+//	MEMBER_JOINED / MEMBER_LEFT     hub → sender
+//
+// Every receiver has a bounded outgoing queue drained by its own writer
+// goroutine. When a queue is full the hub stops reading from the sender, so
+// TCP backpressure slows the sender to the slowest receiver; a receiver whose
+// queue stays full for StallTimeout is dropped. Frame layouts live in
+// src/multiwire.
 package multihub
 
 import (
@@ -5,6 +22,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/schollz/croc/v11/src/multiwire"
 )
 
 var (
@@ -12,75 +31,21 @@ var (
 	errMemberGone = errors.New("member gone")
 )
 
-// Frame types for the hub to route traffic
-const (
-	tJoin         = 1
-	tJoinAck      = 2
-	tMemberJoined = 3
-	tMemberLeft   = 4
-	tDirect       = 5
-	tData         = 6
-	tPing         = 7
-	tError        = 8
-	tKick         = 9
+// The hub's frame codec, frame types, error codes and roles all come from
+// src/multiwire, the contract shared with the clients.
 
-	errRoomLocked = 1
-	errRoomFull   = 2
-	errNoSender   = 3
-	errKickedSlow = 4
-	errBadFrame   = 5
-	errBadVersion = 6
-	errSenderGone = 7
-
-	roleSender   = 1
-	roleReceiver = 2
-
-	senderID = 1
-
-	leftQuit    uint8 = 0 // receiver disconnected on its own
-	leftSlow    uint8 = 1 // hub kicked it for stalling
-	leftNetwork uint8 = 2 // network error
-)
-
-type frame struct {
-	typ     uint8
-	flag    uint8
-	from    uint16
-	to      uint16
-	payload []byte
-}
-
-// Frame helper functions
-func encodeFrame(f frame) []byte {
-	// 6 = typ + flag + from + to
-	b := make([]byte, 6+len(f.payload))
-	b[0] = f.typ
-	b[1] = 0 // flag = 0 for now
-	binary.LittleEndian.PutUint16(b[2:4], f.from)
-	binary.LittleEndian.PutUint16(b[4:6], f.to)
-	copy(b[6:], f.payload)
-
+// encode wraps multiwire.Encode for frames the hub builds. Each one is either
+// tiny (ACK, PING, ERROR, MEMBER_*) or re-wraps a payload that already passed
+// multiwire.Decode's MaxFrame check with the same 6-byte header, so Encode
+// cannot fail here and the error is safe to drop.
+func encode(f multiwire.Frame) []byte {
+	b, _ := multiwire.Encode(f)
 	return b
 }
 
-func decodeFrame(b []byte) (frame, error) {
-	if len(b) < 6 {
-		return frame{}, errors.New("frame too short")
-	}
-
-	return frame{
-		typ:     b[0],
-		flag:    b[1],
-		from:    binary.LittleEndian.Uint16(b[2:4]),
-		to:      binary.LittleEndian.Uint16(b[4:6]),
-		payload: b[6:],
-	}, nil
-}
-
-func makeErrorFrame(code uint8, msg string) []byte {
-	// msg is converted into a byte slice and spread out into single bytes
-	payload := append([]byte{code}, []byte(msg)...)
-	return encodeFrame(frame{typ: tError, payload: payload})
+// errorFrame builds an encoded ERROR frame: code u8 | message.
+func errorFrame(code uint8, msg string) []byte {
+	return encode(multiwire.ErrorFrame(code, msg))
 }
 
 // One connected receiver
@@ -147,6 +112,9 @@ type Config struct {
 	IdleTimeout time.Duration
 }
 
+// Hub is the set of live multi-send rooms on one relay. It is safe for
+// concurrent use: the relay calls Serve once per connection, each in its own
+// goroutine.
 type Hub struct {
 	cfg   Config
 	mu    sync.Mutex
@@ -180,6 +148,9 @@ func New(cfg Config) *Hub {
 	return &Hub{cfg: cfg, rooms: make(map[string]*room)}
 }
 
+// Serve runs one client connection until it disconnects. The first frame
+// must be a JOIN: a sender creates roomName, a receiver joins it. Serve closes
+// c before returning; the error says why the connection ended.
 func (hub *Hub) Serve(roomName string, c Conn) error {
 	// auto close Conn when Serve returns
 	defer c.Close()
@@ -197,38 +168,41 @@ func (hub *Hub) Serve(roomName string, c Conn) error {
 		return err
 	}
 
-	joinFrame, err := decodeFrame(raw)
+	joinFrame, err := multiwire.Decode(raw)
 	// Every payload type needs at least 2 byte
-	if err != nil || joinFrame.typ != tJoin || len(joinFrame.payload) < 2 {
-		_ = c.Send(makeErrorFrame(errBadFrame, "expected JOIN frame"))
+	if err != nil || joinFrame.Type != multiwire.TypeJoin || len(joinFrame.Payload) < 2 {
+		_ = c.Send(errorFrame(multiwire.ErrBadFrame, "expected JOIN frame"))
 		return errors.New("invalid initial frame")
 	}
-	if joinFrame.payload[0] != 1 {
-		_ = c.Send(makeErrorFrame(errBadVersion, "version not supported"))
+	if joinFrame.Payload[0] != multiwire.Version {
+		_ = c.Send(errorFrame(multiwire.ErrBadVersion, "version not supported"))
 		return errors.New("invalid frame version")
 	}
 
-	role := joinFrame.payload[1]
+	role := multiwire.Role(joinFrame.Payload[1])
 	switch role {
-	case roleSender:
+	case multiwire.RoleSender:
 		// Check if sender's requested receiver count fits with hub's configs, and is a valid join frame
 		var maxReceivers uint8 = uint8(hub.cfg.MaxReceivers)
-		if len(joinFrame.payload) >= 3 && joinFrame.payload[2] > 0 && int(joinFrame.payload[2]) < hub.cfg.MaxReceivers {
-			maxReceivers = joinFrame.payload[2]
+		if len(joinFrame.Payload) >= 3 && joinFrame.Payload[2] > 0 && int(joinFrame.Payload[2]) < hub.cfg.MaxReceivers {
+			maxReceivers = joinFrame.Payload[2]
 		}
 
 		return hub.serveSender(roomName, c, maxReceivers)
 
-	case roleReceiver:
-		return hub.serveRecceiver(roomName, c)
+	case multiwire.RoleReceiver:
+		return hub.serveReceiver(roomName, c)
 
 	default:
-		_ = c.Send(makeErrorFrame(errBadFrame, "unknown role"))
+		_ = c.Send(errorFrame(multiwire.ErrBadFrame, "unknown role"))
 		return errors.New("unknown role")
 	}
 }
 
-// Serve a sender's connection to the hub
+// serveSender creates the room, ACKs the sender, then loops reading its
+// frames: DATA is fanned out, DIRECT forwarded to one receiver, KICK drops a
+// receiver. When the sender leaves, every receiver gets ERROR sender-gone and
+// the room is deleted.
 func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 	hubRoom := &room{
 		sender:       c,
@@ -241,7 +215,7 @@ func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 	hub.mu.Lock()
 	if _, exists := hub.rooms[roomName]; exists {
 		hub.mu.Unlock()
-		_ = c.Send(makeErrorFrame(errBadFrame, "room already has a sender"))
+		_ = c.Send(errorFrame(multiwire.ErrBadFrame, "room already has a sender"))
 		return errors.New("room already has a sender")
 	}
 	hub.rooms[roomName] = hubRoom
@@ -264,17 +238,17 @@ func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 
 		// send msg to room members before closing connection
 		for _, m := range localMembers {
-			_ = hub.enqueue(m, makeErrorFrame(errSenderGone, "sender disconnected"))
+			_ = hub.enqueue(m, errorFrame(multiwire.ErrSenderGone, "sender disconnected"))
 			_ = hub.enqueue(m, nil) // nil = close after this
 		}
 	}()
 
 	// Reply sender's JOIN_ACK
-	ack := encodeFrame(frame{
-		typ: tJoinAck,
+	ack := encode(multiwire.Frame{
+		Type: multiwire.TypeJoinAck,
 
-		// JOIN payload contract: version u8 | memberID u16 | maxReceivers u8
-		payload: []byte{1, 1, 0, maxReceivers},
+		// JOIN_ACK payload: version u8 | memberID u16 (= SenderID, little-endian) | maxReceivers u8
+		Payload: []byte{multiwire.Version, byte(multiwire.SenderID), byte(multiwire.SenderID >> 8), maxReceivers},
 	})
 	if err := c.Send(ack); err != nil {
 		return err
@@ -286,7 +260,7 @@ func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 	go func() {
 		tick := time.NewTicker(hub.cfg.PingInterval)
 		defer tick.Stop()
-		ping := encodeFrame(frame{typ: tPing})
+		ping := encode(multiwire.Frame{Type: multiwire.TypePing})
 		for {
 			select {
 			case <-stopPing:
@@ -306,13 +280,13 @@ func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 			return err
 		}
 
-		f, err := decodeFrame(raw)
+		f, err := multiwire.Decode(raw)
 		if err != nil {
 			return err
 		}
 
-		switch f.typ {
-		case tData:
+		switch f.Type {
+		case multiwire.TypeData:
 			//Lock room when the first DATA arrive to copy member conns to local
 			hub.mu.Lock()
 			hubRoom.locked = true
@@ -324,69 +298,71 @@ func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 			hub.mu.Unlock()
 
 			// Fan out DATA to all members
-			dataFrame := encodeFrame(frame{typ: tData, from: senderID, payload: f.payload})
+			dataFrame := encode(multiwire.Frame{Type: multiwire.TypeData, From: multiwire.SenderID, Payload: f.Payload})
 			for _, m := range localMembers {
 				if err := hub.enqueue(m, dataFrame); errors.Is(err, errStalled) {
-					hub.dropMember(hubRoom, m.id, leftSlow, true)
+					hub.dropMember(hubRoom, m.id, multiwire.LeftSlow, true)
 				}
 			}
 
-		case tKick:
-			// payload: memberID u16 | reason u8
-			if len(f.payload) < 2 {
-				_ = c.Send(makeErrorFrame(errBadFrame, "bad-frame"))
+		case multiwire.TypeKick:
+			// Payload: memberID u16 | reason u8
+			if len(f.Payload) < 2 {
+				_ = c.Send(errorFrame(multiwire.ErrBadFrame, "bad-frame"))
 				continue
 			}
 
-			id := binary.LittleEndian.Uint16(f.payload[:2])
+			id := binary.LittleEndian.Uint16(f.Payload[:2])
 
-			hub.dropMember(hubRoom, id, leftQuit, false) // reason is unused when nofifySender = false
+			hub.dropMember(hubRoom, id, multiwire.LeftQuit, false) // reason is unused when nofifySender = false
 
-		case tDirect:
+		case multiwire.TypeDirect:
 			hub.mu.Lock()
-			m := hubRoom.members[f.to]
+			m := hubRoom.members[f.To]
 			hub.mu.Unlock()
 
 			if m != nil {
 				_ = hub.enqueue(
 					m,
-					encodeFrame(
-						frame{
-							typ:     tDirect,
-							from:    senderID,
-							to:      m.id,
-							payload: f.payload,
+					encode(
+						multiwire.Frame{
+							Type:    multiwire.TypeDirect,
+							From:    multiwire.SenderID,
+							To:      m.id,
+							Payload: f.Payload,
 						},
 					))
 			}
 
-		case tPing:
+		case multiwire.TypePing:
 			// ignore
 		}
 	}
 }
 
-// Serve a receiver's connection to the hub
-func (hub *Hub) serveRecceiver(roomName string, c Conn) error {
+// serveReceiver admits a receiver into an existing room, starts its writer
+// and PING goroutines, tells the sender (MEMBER_JOINED), then forwards the
+// receiver's DIRECT frames to the sender until it disconnects.
+func (hub *Hub) serveReceiver(roomName string, c Conn) error {
 	// Admission. Do every check AND the insert under ONE lock, so two
 	// receivers racing for the last slot can't both get in, and the sender
 	// can't leave halfway through.
 	hub.mu.Lock()
 	hubRoom := hub.rooms[roomName]
-	var code uint8
+
 	switch {
 	case hubRoom == nil:
-		code = errNoSender
-	case hubRoom.locked:
-		code = errRoomLocked
-	case len(hubRoom.members) >= int(hubRoom.maxReceivers):
-		code = errRoomFull
-	}
-
-	if code != 0 {
 		hub.mu.Unlock()
-		_ = c.Send(makeErrorFrame(code, "join refused"))
-		return errors.New("join refused")
+		_ = c.Send(errorFrame(multiwire.ErrNoSender, "no sender in this room yet"))
+		return errors.New("no-sender")
+	case hubRoom.locked:
+		hub.mu.Unlock()
+		_ = c.Send(errorFrame(multiwire.ErrRoomLocked, "the transfer already started"))
+		return errors.New("room-locked")
+	case len(hubRoom.members) >= int(hubRoom.maxReceivers):
+		hub.mu.Unlock()
+		_ = c.Send(errorFrame(multiwire.ErrRoomFull, "the sender's receiver count is reached"))
+		return errors.New("room-full")
 	}
 
 	m := &member{
@@ -416,7 +392,7 @@ func (hub *Hub) serveRecceiver(roomName string, c Conn) error {
 			if f == nil || m.conn.Send(f) != nil {
 				return
 			}
-			if f[0] == tData {
+			if f[0] == multiwire.TypeData {
 				touch()
 			}
 		}
@@ -424,9 +400,9 @@ func (hub *Hub) serveRecceiver(roomName string, c Conn) error {
 
 	// JOIN_ACK goes through the queue too, so it always arrives before any
 	// DATA/DIRECT. Payload: version u8 | memberID u16 | maxReceivers u8
-	ack := []byte{1, 0, 0, hubRoom.maxReceivers}
+	ack := []byte{multiwire.Version, 0, 0, hubRoom.maxReceivers}
 	binary.LittleEndian.PutUint16(ack[1:3], m.id)
-	_ = hub.enqueue(m, encodeFrame(frame{typ: tJoinAck, payload: ack}))
+	_ = hub.enqueue(m, encode(multiwire.Frame{Type: multiwire.TypeJoinAck, Payload: ack}))
 
 	// PING this receiver every PingInterval through its queue, until its
 	// writer goroutine exits (m.gone). If the queue is full, DATA is flowing
@@ -434,7 +410,7 @@ func (hub *Hub) serveRecceiver(roomName string, c Conn) error {
 	go func() {
 		tick := time.NewTicker(hub.cfg.PingInterval)
 		defer tick.Stop()
-		ping := encodeFrame(frame{typ: tPing})
+		ping := encode(multiwire.Frame{Type: multiwire.TypePing})
 		for {
 			select {
 			case <-m.gone:
@@ -456,14 +432,14 @@ func (hub *Hub) serveRecceiver(roomName string, c Conn) error {
 	joined := binary.LittleEndian.AppendUint16(nil, m.id)
 	joined = append(joined, byte(len(addr)))
 	joined = append(joined, addr...)
-	_ = hubRoom.sender.Send(encodeFrame(frame{typ: tMemberJoined, to: senderID, payload: joined}))
+	_ = hubRoom.sender.Send(encode(multiwire.Frame{Type: multiwire.TypeMemberJoined, To: multiwire.SenderID, Payload: joined}))
 
 	// Read loop: receivers may only send DIRECT (to the sender) and PING.
 	for {
 		raw, err := c.Receive()
 		if err != nil {
 			// No-op if a KICK or a stall kick already dropped this member.
-			hub.dropMember(hubRoom, m.id, leftQuit, true)
+			hub.dropMember(hubRoom, m.id, multiwire.LeftQuit, true)
 			// Wake the writer so it exits and closes m.gone. Without this, a
 			// writer waiting on an empty queue would wait forever (goroutine
 			// leak). If the queue is full, the writer is mid-Send on the
@@ -474,20 +450,20 @@ func (hub *Hub) serveRecceiver(roomName string, c Conn) error {
 			}
 			return err
 		}
-		f, err := decodeFrame(raw)
+		f, err := multiwire.Decode(raw)
 		if err != nil {
-			_ = hub.enqueue(m, makeErrorFrame(errBadFrame, "frame too short"))
+			_ = hub.enqueue(m, errorFrame(multiwire.ErrBadFrame, "frame too short"))
 			continue
 		}
-		switch f.typ {
-		case tDirect:
+		switch f.Type {
+		case multiwire.TypeDirect:
 			// The hub sets from/to itself and ignores what the client wrote,
 			// so a receiver can't impersonate someone or message another receiver.
-			_ = hubRoom.sender.Send(encodeFrame(frame{typ: tDirect, from: m.id, to: senderID, payload: f.payload}))
-		case tPing:
+			_ = hubRoom.sender.Send(encode(multiwire.Frame{Type: multiwire.TypeDirect, From: m.id, To: multiwire.SenderID, Payload: f.Payload}))
+		case multiwire.TypePing:
 			// keep-alive, nothing to do
 		default: // DATA, KICK, a second JOIN, unknown types
-			_ = hub.enqueue(m, makeErrorFrame(errBadFrame, "not allowed for receivers"))
+			_ = hub.enqueue(m, errorFrame(multiwire.ErrBadFrame, "not allowed for receivers"))
 		}
 	}
 }
@@ -495,7 +471,7 @@ func (hub *Hub) serveRecceiver(roomName string, c Conn) error {
 // queueLen turns the byte budget into a channel capacity. DATA frames are
 // ~32 KB, so 8 MB ≈ 256 frames.
 func queueLen(cfg Config) int {
-	n := max(cfg.QueueBytes/(32*1024), 1)
+	n := max(cfg.QueueBytes/multiwire.ChunkSize, 1)
 	return n
 }
 
@@ -548,5 +524,5 @@ func (hub *Hub) dropMember(r *room, id uint16, reason uint8, notifySender bool) 
 		return
 	}
 	payload := binary.LittleEndian.AppendUint16(nil, m.id)
-	_ = r.sender.Send(encodeFrame(frame{typ: tMemberLeft, to: senderID, payload: append(payload, reason)}))
+	_ = r.sender.Send(encode(multiwire.Frame{Type: multiwire.TypeMemberLeft, To: multiwire.SenderID, Payload: append(payload, reason)}))
 }

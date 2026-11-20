@@ -233,19 +233,36 @@ type Frame struct {
 
 func Encode(f Frame) ([]byte, error)   // lỗi nếu quá 64 KB
 func Decode(b []byte) (Frame, error)
-// hằng số: Version = 1, loại khung, mã lỗi, MaxFrame = 64*1024, ChunkSize = 32*1024
-```
+// hằng số: Version = 1, loại khung, mã lỗi, lý do MEMBER_LEFT, SenderID = 1,
+// MaxFrame = 64*1024, ChunkSize = 32*1024
 
-### 5.2 `src/multihub` (D)
-
-```go
-// Conn là một kết nối khung, trừu tượng hóa mạng để test trong bộ nhớ.
+// Conn là một kết nối khung (hub và client dùng chung); FromComm bọc comm.Comm.
 type Conn interface {
     Send(frame []byte) error
     Receive() ([]byte, error)
     Close() error
     RemoteAddr() string
 }
+func FromComm(c *comm.Comm) Conn
+
+// Khung ERROR thành lỗi Go: (*HubError).Error() in "hub: room-full" ...
+type HubError struct { Code uint8; Msg string }
+func ErrorFrame(code uint8, msg string) Frame
+func ParseError(payload []byte) *HubError
+func ErrorName(code uint8) string
+
+// Bản ghi bên trong DATA (mục 4), dùng chung cho multisend và multirecv.
+func EncodeChunk(fileIdx uint16, offset uint64, data []byte) []byte
+func EncodeFileEnd(fileIdx uint16, hash [32]byte) []byte
+func EncodeAllEnd() []byte
+func DecodeRecord(b []byte) (kind uint8, chunk *ChunkRecord, fileEnd *FileEndRecord, err error)
+```
+
+### 5.2 `src/multihub` (D)
+
+```go
+// Conn là bí danh của multiwire.Conn (cùng một kiểu, không phải bản sao).
+type Conn = multiwire.Conn
 
 // Trường bằng 0 thì New dùng mặc định (DefaultMaxReceivers, DefaultQueueBytes,
 // DefaultStallTimeout).

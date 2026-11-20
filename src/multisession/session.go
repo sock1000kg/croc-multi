@@ -1,3 +1,22 @@
+// Package multisession is the key exchange of croc's multi-send mode
+// (contracts.md §3; owner: T). Both engines use it: multisend calls
+// AuthorizeReceiver once per receiver, multirecv calls JoinSession.
+//
+// The problem it solves: all receivers must decrypt the SAME DATA stream, so
+// the sender picks one random dataKey per session. Each receiver proves it
+// knows the code with its own PAKE run against the sender, and only then gets
+// the dataKey, encrypted with the key that PAKE produced. The hub forwards
+// these DIRECT messages but cannot read them.
+//
+//	receiver (PAKE side A)                       sender (PAKE side B)
+//	  pake1 {pake bytes, hostname}     ──►
+//	                                   ◄──  pake2 {pake bytes, salt}
+//	  pake-confirm {tag A}             ──►      checks tag A (wrong code stops here)
+//	                                   ◄──  AES-GCM(session {tag B, manifest, dataKey})
+//	  checks tag B (proves the sender knew the code too)
+//
+// Each PAKE is bound to "multi:<RoomName>/<memberID>", so a transcript for
+// one receiver cannot be replayed to another. link.go has the transport.
 package multisession
 
 import (
@@ -14,11 +33,16 @@ import (
 	"github.com/schollz/croc/v11/src/pakekey"
 )
 
+// FileEntry is one file in the manifest. Idx is the fileIdx used in DATA
+// records; Path is relative (the receiver validates it before writing).
 type FileEntry struct {
 	Idx  int    `json:"idx"`
 	Path string `json:"path"`
 	Size int64  `json:"size"`
 }
+
+// Session is what a receiver learns after authenticating: the manifest and
+// the key that decrypts every DATA record. It never crosses the hub in clear.
 type Session struct {
 	DataKey   []byte      `json:"dataKey"`
 	ChunkSize int         `json:"chunkSize"`
@@ -26,11 +50,16 @@ type Session struct {
 	EmptyDirs []string    `json:"emptyDirs"`
 	TotalSize int64       `json:"totalSize"`
 }
+
+// ReceiverInfo is shown to the sender's approve callback (Phase 2 approval).
 type ReceiverInfo struct {
 	ID   uint16
 	Addr string
 	Name string
 }
+
+// message is the JSON body of the clear-text DIRECT messages: pake1, pake2,
+// pake-confirm and reject. Only the fields for its Type are set.
 type message struct {
 	Type    string `json:"t"`
 	Version int    `json:"version,omitempty"`
@@ -41,12 +70,16 @@ type message struct {
 	Name    string `json:"name,omitempty"`
 	Reason  string `json:"reason,omitempty"`
 }
+
+// sessionMessage is the final sender → receiver message. It is sent
+// encrypted with the PAKE key, so it may carry the dataKey.
 type sessionMessage struct {
 	Type    string `json:"t"`
 	Confirm []byte `json:"confirm"`
 	Session
 }
 
+// sendMessage sends v as JSON in a DIRECT frame to member id.
 func sendMessage(l *Link, id uint16, v any) error {
 	b, e := json.Marshal(v)
 	if e != nil {
@@ -54,6 +87,9 @@ func sendMessage(l *Link, id uint16, v any) error {
 	}
 	return l.Send(multiwire.Frame{Type: multiwire.TypeDirect, To: id, Payload: b})
 }
+
+// recvMessage reads the next DIRECT from member id as a message, turning a
+// "reject" into an error.
 func recvMessage(ctx context.Context, l *Link, id uint16) (message, error) {
 	f, e := l.RecvPeer(ctx, id)
 	if e != nil {
@@ -68,6 +104,9 @@ func recvMessage(ctx context.Context, l *Link, id uint16) (message, error) {
 	}
 	return m, nil
 }
+
+// roomKey splits code into the PAKE password and this member's PAKE room,
+// "multi:<RoomName>/<memberID>".
 func roomKey(code string, id uint16) (string, string, error) {
 	p, e := codephrase.Parse(code)
 	if e != nil {
@@ -75,6 +114,11 @@ func roomKey(code string, id uint16) (string, string, error) {
 	}
 	return p.PAKEPassphrase, fmt.Sprintf("multi:%s/%d", p.RoomName, id), nil
 }
+
+// AuthorizeReceiver is the sender's side of the exchange with receiver id
+// (call it in its own goroutine per receiver). It returns nil once the
+// encrypted session is sent; the caller then waits for that receiver's "ready".
+// approve, if non-nil, can refuse an authenticated receiver.
 func AuthorizeReceiver(ctx context.Context, l *Link, code string, id uint16, session Session, approve func(ReceiverInfo) bool) error {
 	pass, room, e := roomKey(code, id)
 	if e != nil {
@@ -87,6 +131,7 @@ func AuthorizeReceiver(ctx context.Context, l *Link, code string, id uint16, ses
 	if first.Type != "pake1" || first.Curve != "p256" || first.Version != pakekey.ProtocolVersion {
 		return errors.New("invalid pake1")
 	}
+	// Role 1 = PAKE side B (responder). The receiver is side A.
 	p, e := pakekey.Init([]byte(pass), 1, "p256", pakekey.PurposeTransfer, room)
 	if e != nil {
 		return e
@@ -98,6 +143,8 @@ func AuthorizeReceiver(ctx context.Context, l *Link, code string, id uint16, ses
 	if e != nil {
 		return e
 	}
+	// Both sides derive the same keys from shared + this context. The salt is
+	// fresh per run, so keys differ even if the same receiver joins twice.
 	salt := make([]byte, pakekey.SaltSize)
 	if _, e = rand.Read(salt); e != nil {
 		return e
@@ -114,6 +161,7 @@ func AuthorizeReceiver(ctx context.Context, l *Link, code string, id uint16, ses
 	if e != nil {
 		return e
 	}
+	// A receiver with the wrong code derives different keys, so its tag fails.
 	if confirmation.Type != "pake-confirm" || !pakekey.Confirm(keys.ConfirmationA, confirmation.Tag) {
 		_ = sendMessage(l, id, message{Type: "reject", Reason: "auth"})
 		return errors.New("receiver authentication failed")
@@ -122,6 +170,7 @@ func AuthorizeReceiver(ctx context.Context, l *Link, code string, id uint16, ses
 		_ = sendMessage(l, id, message{Type: "reject", Reason: "refused"})
 		return errors.New("receiver refused")
 	}
+	// Tag B lets the receiver check that we know the code too.
 	plain, e := json.Marshal(sessionMessage{Type: "session", Confirm: keys.ConfirmationB, Session: session})
 	if e != nil {
 		return e
@@ -132,22 +181,26 @@ func AuthorizeReceiver(ctx context.Context, l *Link, code string, id uint16, ses
 	}
 	return l.Send(multiwire.Frame{Type: multiwire.TypeDirect, To: id, Payload: encrypted})
 }
+
+// JoinSession is the receiver's side: run PAKE with the sender over l and
+// return the decrypted Session. A wrong code fails here, before any DATA.
 func JoinSession(ctx context.Context, l *Link, code string) (Session, error) {
 	var session Session
 	pass, room, e := roomKey(code, l.id)
 	if e != nil {
 		return session, e
 	}
+	// Role 0 = PAKE side A (initiator).
 	p, e := pakekey.Init([]byte(pass), 0, "p256", pakekey.PurposeTransfer, room)
 	if e != nil {
 		return session, e
 	}
 	initial := p.Bytes()
 	name, _ := os.Hostname()
-	if e = sendMessage(l, 1, message{Type: "pake1", Version: pakekey.ProtocolVersion, Curve: "p256", Bytes: initial, Name: name}); e != nil {
+	if e = sendMessage(l, multiwire.SenderID, message{Type: "pake1", Version: pakekey.ProtocolVersion, Curve: "p256", Bytes: initial, Name: name}); e != nil {
 		return session, e
 	}
-	response, e := recvMessage(ctx, l, 1)
+	response, e := recvMessage(ctx, l, multiwire.SenderID)
 	if e != nil {
 		return session, e
 	}
@@ -165,13 +218,14 @@ func JoinSession(ctx context.Context, l *Link, code string) (Session, error) {
 	if e != nil {
 		return session, e
 	}
-	if e = sendMessage(l, 1, message{Type: "pake-confirm", Tag: keys.ConfirmationA}); e != nil {
+	if e = sendMessage(l, multiwire.SenderID, message{Type: "pake-confirm", Tag: keys.ConfirmationA}); e != nil {
 		return session, e
 	}
-	frame, e := l.RecvPeer(ctx, 1)
+	frame, e := l.RecvPeer(ctx, multiwire.SenderID)
 	if e != nil {
 		return session, e
 	}
+	// The reply is either a clear-text JSON reject or the encrypted session.
 	var reject message
 	if json.Unmarshal(frame.Payload, &reject) == nil && reject.Type == "reject" {
 		return session, fmt.Errorf("session rejected: %s", reject.Reason)

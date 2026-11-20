@@ -11,35 +11,36 @@ import (
 	"time"
 
 	"github.com/schollz/croc/v11/src/multihub"
+	"github.com/schollz/croc/v11/src/multiwire"
 )
 
-// Frame types, error codes and roles from docs/contracts.md §2. Swap these for
-// the src/multiwire constants once T's package lands.
+// Short names for the src/multiwire contract values, to keep the tests terse.
 const (
-	tJoin         = 1
-	tJoinAck      = 2
-	tMemberJoined = 3
-	tMemberLeft   = 4
-	tDirect       = 5
-	tData         = 6
-	tPing         = 7
-	tError        = 8
-	tKick         = 9
+	tJoin         = multiwire.TypeJoin
+	tJoinAck      = multiwire.TypeJoinAck
+	tMemberJoined = multiwire.TypeMemberJoined
+	tMemberLeft   = multiwire.TypeMemberLeft
+	tDirect       = multiwire.TypeDirect
+	tData         = multiwire.TypeData
+	tPing         = multiwire.TypePing
+	tError        = multiwire.TypeError
+	tKick         = multiwire.TypeKick
 
-	errRoomLocked = 1
-	errRoomFull   = 2
-	errNoSender   = 3
-	errBadFrame   = 5
-	errSenderGone = 7
+	errRoomLocked = multiwire.ErrRoomLocked
+	errRoomFull   = multiwire.ErrRoomFull
+	errNoSender   = multiwire.ErrNoSender
+	errBadFrame   = multiwire.ErrBadFrame
+	errSenderGone = multiwire.ErrSenderGone
 
-	roleSender   = 1
-	roleReceiver = 2
-	senderID     = 1
+	roleSender   = uint8(multiwire.RoleSender)
+	roleReceiver = uint8(multiwire.RoleReceiver)
+	senderID     = multiwire.SenderID
 )
 
 const wait = 2 * time.Second
 
-// frame is the hub header (type u8 | flags u8 | from u16 | to u16) + payload.
+// frame is the hub header (type u8 | flags u8 | from u16 | to u16) + payload,
+// with short field names for the tests.
 type frame struct {
 	typ      uint8
 	from, to uint16
@@ -47,24 +48,19 @@ type frame struct {
 }
 
 func encode(f frame) []byte {
-	b := make([]byte, 6+len(f.payload))
-	b[0] = f.typ
-	binary.LittleEndian.PutUint16(b[2:4], f.from)
-	binary.LittleEndian.PutUint16(b[4:6], f.to)
-	copy(b[6:], f.payload)
+	b, err := multiwire.Encode(multiwire.Frame{Type: f.typ, From: f.from, To: f.to, Payload: f.payload})
+	if err != nil {
+		panic(err)
+	}
 	return b
 }
 
 func decode(b []byte) frame {
-	if len(b) < 6 {
+	f, err := multiwire.Decode(b)
+	if err != nil {
 		return frame{} // typ 0: never valid, so any expect() on it fails
 	}
-	return frame{
-		typ:     b[0],
-		from:    binary.LittleEndian.Uint16(b[2:4]),
-		to:      binary.LittleEndian.Uint16(b[4:6]),
-		payload: b[6:],
-	}
+	return frame{typ: f.Type, from: f.From, to: f.To, payload: f.Payload}
 }
 
 func defaultConfig() multihub.Config {
