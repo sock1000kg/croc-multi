@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/schollz/croc/v11/src/crypt"
+	"github.com/schollz/croc/v11/src/multiwire"
 )
 
 type testStream struct {
@@ -55,7 +56,7 @@ func TestReceiveStreamControls(t *testing.T) {
 		}
 		return v
 	}
-	session := Session{DataKey: key, ChunkSize: 32768, Files: []FileEntry{{Path: "file", Size: int64(len(data))}}, TotalSize: int64(len(data))}
+	session := Session{DataKey: key, ChunkSize: multiwire.ChunkSize, Files: []FileEntry{{Path: "file", Size: int64(len(data))}}, TotalSize: int64(len(data))}
 	t.Run("ready progress done", func(t *testing.T) {
 		dir := t.TempDir()
 		s := &testStream{data: [][]byte{encrypt(chunk), encrypt(end), encrypt([]byte{3})}}

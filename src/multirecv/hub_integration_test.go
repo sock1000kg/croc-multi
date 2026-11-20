@@ -13,6 +13,7 @@ import (
 	"github.com/schollz/croc/v11/src/multihub"
 	"github.com/schollz/croc/v11/src/multirecv"
 	"github.com/schollz/croc/v11/src/multisend"
+	"github.com/schollz/croc/v11/src/multiwire"
 )
 
 type hubStream struct{ conn multihub.Conn }
@@ -26,11 +27,11 @@ func (s hubStream) ReceiveData(ctx context.Context) ([]byte, error) {
 		if len(frame) < 6 {
 			return nil, fmt.Errorf("short frame")
 		}
-		if frame[0] == 6 {
+		if frame[0] == multiwire.TypeData {
 			return frame[6:], nil
 		}
-		if frame[0] == 7 {
-			if err = s.conn.Send([]byte{7, 0, 0, 0, 0, 0}); err != nil {
+		if frame[0] == multiwire.TypePing {
+			if err = s.conn.Send([]byte{multiwire.TypePing, 0, 0, 0, 0, 0}); err != nil {
 				return nil, err
 			}
 			continue
@@ -39,7 +40,7 @@ func (s hubStream) ReceiveData(ctx context.Context) ([]byte, error) {
 	}
 }
 func (s hubStream) SendControl(ctx context.Context, b []byte) error {
-	return s.conn.Send(append([]byte{5, 0, 0, 0, 0, 0}, b...))
+	return s.conn.Send(append([]byte{multiwire.TypeDirect, 0, 0, 0, 0, 0}, b...))
 }
 
 // Exercises the real sender and hub. Authentication awaits multisession.
@@ -50,20 +51,20 @@ func TestSenderHubTwoReceivers(t *testing.T) {
 		client, server := multihub.Pipe()
 		go hub.Serve("multi:test", server)
 		t.Cleanup(func() { client.Close() })
-		if err := client.Send([]byte{1, 0, 0, 0, 0, 0, 1, role, 2}); err != nil {
+		if err := client.Send([]byte{multiwire.TypeJoin, 0, 0, 0, 0, 0, multiwire.Version, role, 2}); err != nil {
 			t.Fatal(err)
 		}
 		ack, err := client.Receive()
-		if err != nil || len(ack) < 10 || ack[0] != 2 {
+		if err != nil || len(ack) < 10 || ack[0] != multiwire.TypeJoinAck {
 			t.Fatalf("join: %x %v", ack, err)
 		}
 		return client
 	}
-	sender := connect(1)
-	conns := []multihub.Conn{connect(2), connect(2)}
+	sender := connect(byte(multiwire.RoleSender))
+	conns := []multihub.Conn{connect(byte(multiwire.RoleReceiver)), connect(byte(multiwire.RoleReceiver))}
 	for range conns {
 		frame, err := sender.Receive()
-		if err != nil || len(frame) < 6 || frame[0] != 3 {
+		if err != nil || len(frame) < 6 || frame[0] != multiwire.TypeMemberJoined {
 			t.Fatalf("member: %x %v", frame, err)
 		}
 	}
@@ -82,7 +83,7 @@ func TestSenderHubTwoReceivers(t *testing.T) {
 				senderErrors <- err
 				return
 			}
-			if len(frame) < 6 || frame[0] != 5 {
+			if len(frame) < 6 || frame[0] != multiwire.TypeDirect {
 				senderErrors <- fmt.Errorf("unexpected frame %x", frame)
 				return
 			}
@@ -101,7 +102,7 @@ func TestSenderHubTwoReceivers(t *testing.T) {
 	for _, conn := range conns {
 		out := t.TempDir()
 		paths = append(paths, filepath.Join(out, "file"))
-		session := multirecv.Session{DataKey: key, ChunkSize: 32768, Files: []multirecv.FileEntry{{Idx: 0, Path: "file", Size: int64(len(data))}}, TotalSize: int64(len(data))}
+		session := multirecv.Session{DataKey: key, ChunkSize: multiwire.ChunkSize, Files: []multirecv.FileEntry{{Idx: 0, Path: "file", Size: int64(len(data))}}, TotalSize: int64(len(data))}
 		go func(c multihub.Conn) {
 			results <- multirecv.ReceiveStream(context.Background(), hubStream{c}, out, session, nil)
 		}(conn)
@@ -122,7 +123,7 @@ func TestSenderHubTwoReceivers(t *testing.T) {
 		}
 	}
 	await("ready", 2)
-	_, err := multisend.StreamFiles(context.Background(), []string{source}, key, func(b []byte) error { return sender.Send(append([]byte{6, 0, 0, 0, 0, 0}, b...)) })
+	_, err := multisend.StreamFiles(context.Background(), []string{source}, key, func(b []byte) error { return sender.Send(append([]byte{multiwire.TypeData, 0, 0, 0, 0, 0}, b...)) })
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,18 +14,19 @@ import (
 	"time"
 
 	"github.com/schollz/croc/v11/src/crypt"
+	"github.com/schollz/croc/v11/src/multiwire"
 )
 
 // TestRecordEncodeDecode kiểm tra tính chính xác của các hàm đóng/mở gói bản ghi
 func TestRecordEncodeDecode(t *testing.T) {
 	// 1. Kiểm tra Chunk (kind 1)
 	payload := []byte("hello network programming multi-send")
-	chunkBytes := EncodeChunk(1, 1024, payload)
-	kind, chunk, fileEnd, err := DecodeRecord(chunkBytes)
+	chunkBytes := multiwire.EncodeChunk(1, 1024, payload)
+	kind, chunk, fileEnd, err := multiwire.DecodeRecord(chunkBytes)
 	if err != nil {
-		t.Fatalf("DecodeRecord chunk failed: %v", err)
+		t.Fatalf("multiwire.DecodeRecord chunk failed: %v", err)
 	}
-	if kind != RecordKindChunk || chunk == nil || fileEnd != nil {
+	if kind != multiwire.RecordKindChunk || chunk == nil || fileEnd != nil {
 		t.Fatalf("expected RecordKindChunk, got %d", kind)
 	}
 	if chunk.FileIdx != 1 || chunk.Offset != 1024 || !bytes.Equal(chunk.Data, payload) {
@@ -34,12 +35,12 @@ func TestRecordEncodeDecode(t *testing.T) {
 
 	// 2. Kiểm tra FileEnd (kind 2)
 	dummyHash := sha256.Sum256([]byte("dummy content"))
-	fileEndBytes := EncodeFileEnd(2, dummyHash)
-	kind, chunk, fileEnd, err = DecodeRecord(fileEndBytes)
+	fileEndBytes := multiwire.EncodeFileEnd(2, dummyHash)
+	kind, chunk, fileEnd, err = multiwire.DecodeRecord(fileEndBytes)
 	if err != nil {
-		t.Fatalf("DecodeRecord fileEnd failed: %v", err)
+		t.Fatalf("multiwire.DecodeRecord fileEnd failed: %v", err)
 	}
-	if kind != RecordKindFileEnd || fileEnd == nil || chunk != nil {
+	if kind != multiwire.RecordKindFileEnd || fileEnd == nil || chunk != nil {
 		t.Fatalf("expected RecordKindFileEnd, got %d", kind)
 	}
 	if fileEnd.FileIdx != 2 || fileEnd.Hash != dummyHash {
@@ -47,12 +48,12 @@ func TestRecordEncodeDecode(t *testing.T) {
 	}
 
 	// 3. Kiểm tra AllEnd (kind 3)
-	allEndBytes := EncodeAllEnd()
-	kind, chunk, fileEnd, err = DecodeRecord(allEndBytes)
+	allEndBytes := multiwire.EncodeAllEnd()
+	kind, chunk, fileEnd, err = multiwire.DecodeRecord(allEndBytes)
 	if err != nil {
-		t.Fatalf("DecodeRecord allEnd failed: %v", err)
+		t.Fatalf("multiwire.DecodeRecord allEnd failed: %v", err)
 	}
-	if kind != RecordKindAllEnd || chunk != nil || fileEnd != nil {
+	if kind != multiwire.RecordKindAllEnd || chunk != nil || fileEnd != nil {
 		t.Fatalf("expected RecordKindAllEnd, got %d", kind)
 	}
 }
@@ -161,21 +162,21 @@ func TestM1c_SenderEngine(t *testing.T) {
 						return
 					}
 
-					kind, chunk, fileEnd, err := DecodeRecord(plainRecord)
+					kind, chunk, fileEnd, err := multiwire.DecodeRecord(plainRecord)
 					if err != nil {
 						t.Errorf("[Receiver %d] giải mã bản ghi thất bại: %v", rx.id, err)
 						return
 					}
 
 					switch kind {
-					case RecordKindChunk:
+					case multiwire.RecordKindChunk:
 						if _, err := outFile.WriteAt(chunk.Data, int64(chunk.Offset)); err != nil {
 							t.Errorf("[Receiver %d] ghi file thất bại: %v", rx.id, err)
 							return
 						}
 						rx.bytesRec += int64(len(chunk.Data))
 
-					case RecordKindFileEnd:
+					case multiwire.RecordKindFileEnd:
 						// Kiểm tra sha256 sau khi nhận hết file
 						outFile.Sync()
 						content, err := os.ReadFile(rx.outFile)
@@ -190,7 +191,7 @@ func TestM1c_SenderEngine(t *testing.T) {
 						}
 						rx.hashHex = hex.EncodeToString(actualHash[:])
 
-					case RecordKindAllEnd:
+					case multiwire.RecordKindAllEnd:
 						rx.done = true
 						return
 					}

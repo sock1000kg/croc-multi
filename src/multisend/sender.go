@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/schollz/croc/v11/src/crypt"
+	"github.com/schollz/croc/v11/src/multiwire"
 )
 
 // StreamFiles đọc tuần tự từng file, cắt khối 32KB, mã hóa bằng dataKey và phát qua kênh emit
@@ -43,8 +44,8 @@ func StreamFiles(ctx context.Context, files []string, dataKey []byte, emit func(
 	}
 
 	var totalBytesSent int64
-	buf := make([]byte, ChunkSize) // plaintext read buffer, reused every chunk
-	var cipherBuf []byte           // ciphertext buffer, reused after the first record
+	buf := make([]byte, multiwire.ChunkSize) // plaintext read buffer, reused every chunk
+	var cipherBuf []byte                     // ciphertext buffer, reused after the first record
 
 	for fileIdx, filePath := range files {
 		f, err := os.Open(filePath)
@@ -64,13 +65,13 @@ func StreamFiles(ctx context.Context, files []string, dataKey []byte, emit func(
 				return totalBytesSent, ctx.Err()
 			}
 
-			// Read may return fewer than ChunkSize bytes (always at EOF, sometimes
+			// Read may return fewer than multiwire.ChunkSize bytes (always at EOF, sometimes
 			// mid-file); chunks are therefore "up to" 32 KB, never exactly sized.
 			// Per io.Reader rules, handle n > 0 BEFORE looking at readErr.
 			n, readErr := tee.Read(buf)
 			if n > 0 {
 				// uint16(fileIdx) silently wraps past 65535 files (contract limit).
-				plainRecord := EncodeChunk(uint16(fileIdx), offset, buf[:n])
+				plainRecord := multiwire.EncodeChunk(uint16(fileIdx), offset, buf[:n])
 				offset += uint64(n)
 
 				cipherChunk, err := crypt.EncryptAEADTo(cipherBuf, plainRecord, aead)
@@ -104,7 +105,7 @@ func StreamFiles(ctx context.Context, files []string, dataKey []byte, emit func(
 		// its sum is the file's SHA-256. Receivers compare it after writing.
 		var hashArr [32]byte
 		copy(hashArr[:], hasher.Sum(nil))
-		fileEndRecord := EncodeFileEnd(uint16(fileIdx), hashArr)
+		fileEndRecord := multiwire.EncodeFileEnd(uint16(fileIdx), hashArr)
 		cipherEnd, err := crypt.EncryptAEADTo(cipherBuf, fileEndRecord, aead)
 		if err != nil {
 			return totalBytesSent, err
@@ -116,7 +117,7 @@ func StreamFiles(ctx context.Context, files []string, dataKey []byte, emit func(
 	}
 
 	// Gửi all-end kết thúc toàn bộ phiên
-	allEndRecord := EncodeAllEnd()
+	allEndRecord := multiwire.EncodeAllEnd()
 	cipherAllEnd, err := crypt.EncryptAEADTo(cipherBuf, allEndRecord, aead)
 	if err != nil {
 		return totalBytesSent, err

@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/schollz/croc/v11/src/comm"
+	"github.com/schollz/croc/v11/src/multiwire"
 	"github.com/schollz/croc/v11/src/tcp"
 )
 
@@ -49,21 +50,10 @@ const (
 	modeSilent = "silent" // read everything but never send, not even PING replies: dropped by idle timeout (60s)
 )
 
-// Hub frame types and roles (docs/contracts.md §2). Every frame is a 6-byte
-// header, type u8 | flags u8 | from u16 | to u16, followed by the payload.
-// TODO: use the src/multiwire constants once T's package exists.
-const (
-	tJoin        = 1
-	tJoinAck     = 2
-	tMemberLeft  = 4
-	tData        = 6
-	tPing        = 7
-	tError       = 8
-	roleSender   = 1
-	roleReceiver = 2
-	chunkSize    = 32 * 1024
-	joinAckWait  = 5 * time.Second // contracts.md §1
-)
+// joinAckWait is how long to wait for JOIN_ACK before deciding the relay has
+// no multi-send hub (contracts.md §1). Frame types, roles and sizes come from
+// src/multiwire.
+const joinAckWait = 5 * time.Second
 
 type options struct {
 	relay     string
@@ -154,7 +144,7 @@ type peer struct {
 	id     uint16
 	faulty bool
 	conn   *comm.Comm
-	bytes  atomic.Int64 // DATA payload bytes received (normal receivers)
+	bytes  atomic.Int64  // DATA payload bytes received (normal receivers)
 	done   chan struct{} // closed when a normal receiver has every byte
 }
 
@@ -174,7 +164,7 @@ func scenario(o options) (bool, error) {
 		room, o.relay, o.sizeMB, o.receivers, o.faulty, o.mode)
 
 	// 1. The sender joins first; receivers that come earlier get no-sender.
-	sender, _, err := join(o, room, roleSender, byte(o.receivers+o.faulty))
+	sender, _, err := join(o, room, multiwire.RoleSender, byte(o.receivers+o.faulty))
 	if err != nil {
 		return false, fmt.Errorf("sender: %w", err)
 	}
@@ -183,7 +173,7 @@ func scenario(o options) (bool, error) {
 	// 2. Receivers join. Normal ones read in the background straight away.
 	var peers []*peer
 	for i := 0; i < o.receivers+o.faulty; i++ {
-		c, id, err := join(o, room, roleReceiver, 0)
+		c, id, err := join(o, room, multiwire.RoleReceiver, 0)
 		if err != nil {
 			return false, fmt.Errorf("receiver %d: %w", i+1, err)
 		}
@@ -217,9 +207,9 @@ func scenario(o options) (bool, error) {
 				return
 			}
 			switch f[0] {
-			case tPing:
-				_ = sender.Send(header(tPing, 0))
-			case tMemberLeft:
+			case multiwire.TypePing:
+				_ = sender.Send(header(multiwire.TypePing, 0))
+			case multiwire.TypeMemberLeft:
 				if len(f) >= 9 {
 					mu.Lock()
 					left[binary.LittleEndian.Uint16(f[6:8])] = leave{reason: f[8], after: time.Since(start)}
@@ -230,11 +220,11 @@ func scenario(o options) (bool, error) {
 	}()
 
 	// 4. Push the data. A stalled receiver blocks this until the hub drops it.
-	chunk := make([]byte, chunkSize)
+	chunk := make([]byte, multiwire.ChunkSize)
 	_, _ = rand.Read(chunk)
-	frame := append(header(tData, 0), chunk...)
-	for sent := int64(0); sent < total; sent += chunkSize {
-		n := min(int64(chunkSize), total-sent)
+	frame := append(header(multiwire.TypeData, 0), chunk...)
+	for sent := int64(0); sent < total; sent += multiwire.ChunkSize {
+		n := min(int64(multiwire.ChunkSize), total-sent)
 		if err := sender.Send(frame[:6+n]); err != nil {
 			return false, fmt.Errorf("sending DATA after %.1f MB: %w", float64(sent)/(1<<20), err)
 		}
@@ -292,13 +282,13 @@ func scenario(o options) (bool, error) {
 
 // join does the relay handshake into room, sends a hub JOIN and waits for the
 // JOIN_ACK. It returns the connection and the member ID the hub assigned.
-func join(o options, room string, role, maxReceivers byte) (*comm.Comm, uint16, error) {
+func join(o options, room string, role multiwire.Role, maxReceivers byte) (*comm.Comm, uint16, error) {
 	c, _, _, err := tcp.ConnectToTCPServer(o.relay, o.pass, room)
 	if err != nil {
 		return nil, 0, err
 	}
 	// JOIN payload: version u8 | role u8 | maxReceivers u8
-	if err := c.Send(append(header(tJoin, 0), 1, role, maxReceivers)); err != nil {
+	if err := c.Send(append(header(multiwire.TypeJoin, 0), multiwire.Version, byte(role), maxReceivers)); err != nil {
 		c.Close()
 		return nil, 0, err
 	}
@@ -308,12 +298,12 @@ func join(o options, room string, role, maxReceivers byte) (*comm.Comm, uint16, 
 		return nil, 0, fmt.Errorf("no JOIN_ACK within %s; this relay does not support multi-send: %w", joinAckWait, err)
 	}
 	switch {
-	case len(reply) >= 9 && reply[0] == tJoinAck:
+	case len(reply) >= 9 && reply[0] == multiwire.TypeJoinAck:
 		// JOIN_ACK payload: version u8 | memberID u16 | maxReceivers u8
 		return c, binary.LittleEndian.Uint16(reply[7:9]), nil
-	case len(reply) >= 7 && reply[0] == tError:
+	case len(reply) >= 7 && reply[0] == multiwire.TypeError:
 		c.Close()
-		return nil, 0, fmt.Errorf("hub refused JOIN: error %d %q", reply[6], reply[7:])
+		return nil, 0, fmt.Errorf("hub refused JOIN: %w", multiwire.ParseError(reply[6:]))
 	default:
 		c.Close()
 		return nil, 0, fmt.Errorf("unexpected reply to JOIN: %x", reply)
@@ -331,9 +321,9 @@ func readAll(p *peer, total int64) {
 			continue
 		}
 		switch f[0] {
-		case tPing:
-			_ = p.conn.Send(header(tPing, 0))
-		case tData:
+		case multiwire.TypePing:
+			_ = p.conn.Send(header(multiwire.TypePing, 0))
+		case multiwire.TypeData:
 			if p.bytes.Add(int64(len(f)-6)) == total {
 				close(p.done)
 			}
@@ -369,7 +359,7 @@ func misbehave(o options, c *comm.Comm) {
 
 // header builds a 6-byte hub frame header with from = 0 (the hub fills it in).
 func header(typ byte, to uint16) []byte {
-	h := make([]byte, 6, 6+chunkSize)
+	h := make([]byte, 6, 6+multiwire.ChunkSize)
 	h[0] = typ
 	binary.LittleEndian.PutUint16(h[4:6], to)
 	return h

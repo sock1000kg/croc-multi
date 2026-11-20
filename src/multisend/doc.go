@@ -20,13 +20,16 @@
 //
 // # What lives here
 //
-//   - record.go: the plaintext record format that goes INSIDE each encrypted
-//     DATA frame (chunk / file-end / all-end). See docs/contracts.md §4.
+//   - client.go: Send, the full flow behind `croc send --receivers N`: dial the
+//     relay, authenticate each receiver as it joins, wait for N "ready",
+//     stream the files, then wait for every "done"/"fail".
 //   - sender.go: StreamFiles, the loop that reads files, cuts them into 32 KB
 //     chunks, hashes them, encrypts each record once, and hands the ciphertext
 //     to a caller-supplied emit function (later: "send a DATA frame to the hub").
-//   - types.go: SendOptions/PeerProgress and the Send entry point. Send is still
-//     a stub; it gets wired to multisession + the real relay in milestone M2.
+//   - types.go: SendOptions and PeerProgress.
+//
+// The record format inside each DATA frame (chunk / file-end / all-end) is in
+// src/multiwire/record.go, shared with the receiver.
 //
 // # Layers, from outside in
 //
@@ -35,7 +38,7 @@
 //	comm frame:    "croc" | len u32 | ...                  (src/comm, existing)
 //	 hub frame:    type u8 | flags u8 | from u16 | to u16 | ...   (src/multiwire)
 //	  DATA payload: nonce(12) | AES-GCM ciphertext | tag(16) (src/crypt)
-//	   record:      kind u8 | fileIdx u16 | offset u64 | data   (this package)
+//	   record:      kind u8 | fileIdx u16 | offset u64 | data   (src/multiwire)
 //
 // The hub only ever looks at the hub-frame header; everything from the nonce
 // inward is opaque to it.
