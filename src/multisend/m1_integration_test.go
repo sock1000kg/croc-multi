@@ -52,7 +52,7 @@ func TestFullM1InMemory(t *testing.T) {
 		t.Fatal(e)
 	}
 	key := bytes.Repeat([]byte{71}, 32)
-	session := multisession.Session{DataKey: key, ChunkSize: 32768, Files: []multisession.FileEntry{{Idx: 0, Path: "file", Size: int64(len(data))}}, TotalSize: int64(len(data))}
+	session := multisession.Session{DataKey: key, ChunkSize: multiwire.ChunkSize, Files: []multisession.FileEntry{{Idx: 0, Path: "file", Size: int64(len(data))}}, TotalSize: int64(len(data))}
 	sent := make(chan error, 1)
 	go func() {
 		sent <- sendSession(ctx, sender, "room-correct-words", session, SendOptions{Files: []string{source}, Receivers: 2})

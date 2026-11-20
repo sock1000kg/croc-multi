@@ -68,6 +68,9 @@ func registerMultiSend(app *cli.App) {
 
 // sendMulti là hàm điều khiển chính phía gửi (sẽ kết nối với src/multisend ở M1c)
 func sendMulti(c *cli.Context) error {
+	// Set the debug level based on CLI
+	setDebugLevel(c)
+
 	receivers := c.Int("receivers")
 	approve := c.Bool("approve")
 	timeout := c.Duration("timeout")
@@ -106,6 +109,9 @@ func registerMultiRecv(app *cli.App) {
 
 // receiveMulti là hàm điều khiển chính phía nhận (L sẽ hoàn thiện ở M1d)
 func receiveMulti(c *cli.Context) error {
+	// Set the debug level based on CLI
+	setDebugLevel(c)
+
 	if c.NArg() != 1 {
 		return errors.New("cần chỉ định một code để nhận multi-send")
 	}

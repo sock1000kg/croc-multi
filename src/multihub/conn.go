@@ -5,56 +5,32 @@ import (
 	"time"
 
 	"github.com/schollz/croc/v11/src/comm"
+	"github.com/schollz/croc/v11/src/multiwire"
 )
 
-// A conenction for multihub logic
-type Conn interface {
-	Send(b []byte) error
-	Receive() ([]byte, error)
-	Close() error
-	RemoteAddr() string
-}
+// Conn is the framed connection the hub serves. It is the same type the
+// clients use (multiwire.Conn); the alias keeps the multihub.Conn name from
+// docs/contracts.md §5.2.
+type Conn = multiwire.Conn
 
-// Wrap over croc's comm.Comm to match the Conn interface used by multihub
-// We want to reuse comm.Comm, but through interacting with the Conn interface
-type commCon struct {
-	c *comm.Comm
-}
+// FromComm adapts a relay connection (already past the relay handshake) to
+// Conn, so src/tcp can hand it to Hub.Serve.
+func FromComm(c *comm.Comm) Conn { return multiwire.FromComm(c) }
 
-// Defines commCon's wrapper functions for comm.Comm
-func (x commCon) Send(b []byte) error {
-	return x.c.Send(b)
-}
-
-func (x commCon) Receive() ([]byte, error) {
-	return x.c.Receive()
-}
-
-func (x commCon) Close() error {
-	x.c.Close()
-	return nil
-}
-
-func (x commCon) RemoteAddr() string {
-	return x.c.Connection().RemoteAddr().String()
-}
-
-// Pipe tạo cặp Conn nối nhau trong bộ nhớ, dùng cho test và hub trong bộ nhớ.
-// Dựng từ net.Pipe() bọc bằng comm.Comm, nên dùng đúng cách đóng khung "croc" của
-// relay thật. net.Pipe không có bộ đệm: Send chặn tới khi đầu kia Receive.
-//
 // Pipe returns two Conns joined in memory: whatever one Sends, the other
-// Receives. Typical use: give one end to hub.Serve, keep the other as the client.
+// Receives. Typical use: give one end to hub.Serve, keep the other as the
+// client. It is built from net.Pipe wrapped in comm.Comm, so frames get the
+// same "croc" + length framing as on the real relay. net.Pipe has no buffer:
+// Send blocks until the other end Receives.
 func Pipe() (a, b Conn) {
 	x, y := net.Pipe()
-	return commCon{comm.New(x)}, commCon{comm.New(y)}
+	return FromComm(comm.New(x)), FromComm(comm.New(y))
 }
 
 // idleConn closes c if nothing arrives for d. Each successful Receive pushes
 // the deadline back.
 type idleConn struct {
-	// embedding: Send/Close/RemoteAddr pass straight through
-	Conn
+	Conn  // embedded: Send/Close/RemoteAddr pass straight through
 	timer *time.Timer
 	d     time.Duration
 }
@@ -72,10 +48,4 @@ func (c idleConn) Receive() ([]byte, error) {
 // DATA is alive even if it never sends anything back.
 func (c idleConn) touch() {
 	c.timer.Reset(c.d)
-}
-
-// FromComm adapts a relay connection (already past the relay handshake) to
-// Conn, so src/tcp can hand it to Hub.Serve.
-func FromComm(c *comm.Comm) Conn {
-	return commCon{c}
 }

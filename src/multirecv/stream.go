@@ -10,11 +10,16 @@ import (
 
 // Stream is an authenticated session's data and control transport. ReceiveData
 // returns only DATA payloads; the transport handles PING and hub errors.
+// The real one is sessionStream (client.go); tests feed recorded frames.
 type Stream interface {
 	ReceiveData(context.Context) ([]byte, error)
 	SendControl(context.Context, []byte) error
 }
 
+// controlMessage is the JSON the receiver sends the sender in DIRECT frames
+// (contracts.md §3): "ready" (manifest accepted, send DATA), "progress"
+// (at most every 500 ms), "done" (all hashes matched) or "fail" (with Reason).
+// Pointer fields so that omitempty drops unset ones but keeps a real 0/false.
 type controlMessage struct {
 	Type   string `json:"t"`
 	Files  *int   `json:"files,omitempty"`
@@ -25,6 +30,10 @@ type controlMessage struct {
 
 // ReceiveStream receives an already authenticated session. The stream adapter
 // must direct control messages to the sender and unblock on context cancellation.
+//
+// Order: New (validate manifest) → send "ready" → Accept every DATA payload
+// until all-end → send "done". Any error sends "fail" (best effort) and is
+// returned; Receiver.Close then deletes unfinished temp files.
 func ReceiveStream(ctx context.Context, stream Stream, outDir string, session Session, progress func(int64, int64)) (result error) {
 	send := func(message controlMessage) error {
 		payload, err := json.Marshal(message)

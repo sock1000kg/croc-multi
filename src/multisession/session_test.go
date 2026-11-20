@@ -27,7 +27,7 @@ func TestSessionAuthentication(t *testing.T) {
 		return l
 	}
 	sender := connect(multiwire.RoleSender)
-	session := multisession.Session{DataKey: bytes.Repeat([]byte{7}, 32), ChunkSize: 32768}
+	session := multisession.Session{DataKey: bytes.Repeat([]byte{7}, 32), ChunkSize: multiwire.ChunkSize}
 	for _, test := range []struct {
 		code string
 		good bool

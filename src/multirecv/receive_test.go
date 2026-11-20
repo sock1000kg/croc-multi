@@ -10,13 +10,14 @@ import (
 	"testing"
 
 	"github.com/schollz/croc/v11/src/crypt"
+	"github.com/schollz/croc/v11/src/multiwire"
 )
 
 func TestReceiveRecords(t *testing.T) {
 	key := bytes.Repeat([]byte{7}, 32)
 	data := []byte("multi-send payload")
 	newSession := func(name string) Session {
-		return Session{DataKey: key, ChunkSize: 32768, Files: []FileEntry{{Idx: 0, Path: name, Size: int64(len(data))}}, TotalSize: int64(len(data))}
+		return Session{DataKey: key, ChunkSize: multiwire.ChunkSize, Files: []FileEntry{{Idx: 0, Path: name, Size: int64(len(data))}}, TotalSize: int64(len(data))}
 	}
 	encrypt := func(b []byte) []byte {
 		t.Helper()
