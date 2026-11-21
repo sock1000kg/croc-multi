@@ -55,8 +55,11 @@ từng người vào** và **đuổi người bị từ chối** mới là thứ
    (`golang.org/x/time/rate`), `termui`, `utils.GetInputContext` (câu hỏi duyệt), và cách
    đăng ký cờ/lệnh trong `src/cli/cli.go`.
 6. **Relay cũ/công cộng** coi `multi:` là phòng 2 người bình thường nên người gửi sẽ chờ mãi.
-   Vì vậy client bắt buộc chờ `JOIN_ACK` từ hub trong vài giây; nếu không có thì báo rõ
-   "relay này không hỗ trợ multi-send, hãy dùng `croc relay` của bạn".
+   Vì vậy client bắt buộc chờ `JOIN_ACK` từ hub trong 5 giây (`multisession.Dial`); nếu không có
+   thì báo "relay này không hỗ trợ multi-send, hãy dùng `croc relay` của bạn". **Thực tế (đã
+   thử):** relay croc cũ trả lời ngay một gói không phải khung hub, nên client báo
+   `invalid multi frame size` thay cho câu trên (không treo, chỉ khó hiểu); sửa trong việc
+   "Tăng cứng hub" của D.
 7. **Chưa kiểm chứng:** tốc độ thật của một luồng TCP so với cách croc mở tới 8 kết nối dữ
    liệu. Mốc M3 đo việc này; nếu thiếu thì thêm "làn dữ liệu" (nhiều kết nối) ở Phase 2.
 
@@ -74,15 +77,23 @@ từng người vào** và **đuổi người bị từ chối** mới là thứ
    `multi:<RoomName>` với vai trò SENDER. **Người nhận:** `croc --multi CODE` (cờ rõ ràng cho
    MVP; tự nhận dạng code multi là việc Should) vào cùng phòng với vai trò RECEIVER.
 2. **Phòng chờ:** mỗi người nhận vào thì người gửi chạy PAKE với người đó (khung `DIRECT`),
-   rồi gửi `session` (manifest + `dataKey`, mã hóa bằng khóa cặp). Có thể bật duyệt từng
-   người. Người gửi tự đếm số người đã duyệt; người tới sau khi đủ N bị `reject` và `KICK`.
-3. **Bắt đầu:** khi đủ N người sẵn sàng (hoặc người gửi nhấn Enter). MVP từ chối người vào
-   muộn; Phase 2 thêm "vòng bù" để người vào muộn/lỗi nhận tiếp.
+   rồi gửi `session` (manifest + `dataKey`, mã hóa bằng khóa cặp). Người gửi gửi N trong `JOIN`,
+   nên **hub** giữ tối đa N người nhận cùng lúc; người thứ N+1 nhận `ERROR room-full`. Ai sai
+   code hoặc không `ready` trong hạn thì bị `KICK`, nhường chỗ. Duyệt từng người (`--approve`)
+   là việc Phase 2 (hiện báo "chưa hỗ trợ").
+3. **Bắt đầu:** khi đủ N người sẵn sàng. (Nhấn Enter để bắt đầu sớm: chưa làm.) Từ `DATA` đầu
+   tiên phòng bị khóa: người vào muộn nhận `ERROR room-locked`, kể cả người vừa rớt mạng muốn
+   vào lại. Phase 2 thêm "vòng bù" để người vào muộn/lỗi nhận tiếp.
 4. **Truyền:** người gửi đọc từng file, cắt khối 32 KB, mã hóa bằng `dataKey`, gửi khung
    `DATA`; hub phát cho mọi người nhận. Người nhận giải mã, ghi qua `receivefs`, kiểm tra
    băm cuối mỗi file.
 5. **Kết thúc:** mỗi người nhận gửi `done` (hoặc `fail`) cho người gửi qua `DIRECT`. Người
-   gửi in trạng thái từng người và thoát khi cả N xong; hub đóng phòng.
+   gửi thoát khi cả N có kết quả (mã 0 nếu tất cả `done`, 1 nếu có người lỗi, kèm danh sách
+   lỗi); hub đóng phòng. Hiện người gửi chưa in trạng thái từng người (xem mục 11).
+6. **Ai rời đi:** người nhận rời giữa chừng thì những người khác vẫn nhận tiếp, người gửi được
+   báo `MEMBER_LEFT` và cuối cùng thoát mã 1; file dở của người đó bị xóa. Người gửi rời thì hub
+   gửi `ERROR sender-gone` cho mọi người nhận và đóng phòng; file nào đã xong và khớp băm thì
+   được giữ, file dở bị xóa.
 
 ### 3.2 Hành vi của hub (phía relay, chỉ thêm)
 
@@ -91,30 +102,39 @@ từng người vào** và **đuổi người bị từ chối** mới là thứ
   trong bộ nhớ).
 - Phòng gồm `sender` và `receivers map[uint16]*member`. Mỗi người nhận có **hàng đợi gửi ra
   có giới hạn** (khoảng 8 MB). Khi một hàng đợi đầy, hub ngừng đọc từ người gửi (áp lực
-  ngược của TCP), nên **người nhận chậm nhất quyết định tốc độ**. Người nhận đứng im quá
-  30 giây thì bị loại với `ERROR` và người gửi được báo.
+  ngược của TCP), nên **người nhận chậm nhất quyết định tốc độ**: một người nhận không đọc
+  làm **mọi người** dừng tới 30 giây. Hết 30 giây hub đóng kết nối người đó (không gửi
+  `ERROR`, vì người không đọc cũng không nhận được) và báo người gửi `MEMBER_LEFT` lý do 1.
 - Hub chỉ đọc phần **header không mã hóa** của khung.
-- Giới hạn cấu hình được trên relay (`--multi-max-receivers`, mặc định 16), khung ≤ 64 KB,
-  không chặn theo IP (người cùng NAT phải vào được); chống làm phiền ở phía người gửi
-  (`contracts.md` mục 3.5), TTL phòng như hiện nay.
+- Giữ kết nối: hub gửi `PING` mỗi 15 giây, client trả `PING`; kết nối im lặng 60 giây bị đóng.
+  Phòng `multi:` **không** dùng TTL phòng của relay 1-1: phòng sống tới khi người gửi rời.
+- Cờ relay: `--multi-max-receivers` (mặc định 16), `--multi-queue-mb` (8),
+  `--multi-stall-timeout` (30s), `--multi-join-rate` (120 lần/phút/IP). Khung ≤ 64 KB (kiểm
+  tra trong `multiwire.Decode`). Không chặn theo IP (người cùng NAT phải vào được); chống làm
+  phiền ở phía người gửi (`contracts.md` mục 3.5). Cờ `--max-rooms-open` của relay **không** đếm
+  phòng `multi:` (chưa có giới hạn số phòng multi, việc của D ở Phase 2).
 - Người nhận không được gửi `DATA`; `DIRECT` của người nhận chỉ đi tới người gửi.
 
 ## 4. Cấu trúc thư mục (mỗi người một vùng)
 
 | Đường dẫn | Chủ | Nội dung |
 |---|---|---|
-| `src/multiwire/` | T | Mã hóa/giải mã khung, cấu trúc thông điệp, hằng số (hợp đồng, đóng băng ở M0) |
-| `src/multisession/` | T | PAKE từng người nhận, chuyển `dataKey`, móc duyệt người vào; dùng chung cho hai engine |
+| `src/multiwire/` | T | Hợp đồng dùng chung: khung hub, hằng số (loại khung, mã lỗi, vai trò, `SenderID`), `Conn`, `HubError`, bản ghi trong `DATA` (`record.go`) |
+| `src/multisession/` | T | `Link` (kết nối đã `JOIN`, chia khung theo người), PAKE từng người nhận, chuyển `dataKey`, móc duyệt người vào; dùng chung cho hai engine |
 | `src/multihub/` | D | Logic hub thuần |
 | `src/tcp/multi_room.go` + 1 nhánh trong `src/tcp/tcp.go` | D | Gắn hub vào relay (chỗ duy nhất sửa code relay cũ) |
 | `deploy/`, `tools/faultinject/` | D | Terraform + Ansible cho relay Azure, người nhận giả |
-| `src/multisend/` | N | Đọc file, cắt khối, mã hóa một lần, phát, chờ N `done`, giới hạn tốc độ |
+| `src/multisend/` | N | Đọc file, cắt khối, mã hóa một lần, phát, chờ N `done` (giới hạn tốc độ: chưa làm) |
 | `src/cli/multi.go` + một dòng đăng ký trong `src/cli/cli.go` | N (gửi) / L (nhận) | Cờ `--receivers`, `--multi`, `--approve`, `--timeout` |
 | `src/multirecv/` | L | Nhận, giải mã, ghi an toàn, kiểm tra băm, tiến độ |
 | `scripts/bench/`, `docs/multi-e2e-test.md` | L | Benchmark và bài thử đầu-cuối từ xa qua relay |
 
 Chỉ có `src/multiwire` và `src/multihub` là hợp đồng giữa nhiều người. Các phần còn lại độc
-lập và dùng hub trong bộ nhớ trong bộ nhớ cho đến khi hub thật xong.
+lập và dùng hub trong bộ nhớ (`multihub.Pipe`) để test.
+
+Thực tế đến 21/11: `multiwire` và `multisession` do L viết cùng engine nhận (PR #12), không phải
+T; PR #13 gom mọi hằng số, mã khung và định dạng bản ghi vào `multiwire` (trước đó hub, công cụ
+và engine nhận mỗi nơi giữ một bản sao). Bảng trên vẫn là người chịu trách nhiệm review.
 
 ## 5. Phác thảo định dạng gói tin (T hoàn thiện thành `contracts.md` ở M0)
 
@@ -130,23 +150,35 @@ Nằm trong khung `comm` có sẵn (`"croc"` + độ dài u32 little-endian + n�
 | 5 | `DIRECT` | hai chiều (người nhận ↔ người gửi) | Thông điệp điều khiển riêng |
 | 6 | `DATA` | người gửi → hub → mọi người nhận | Khối dữ liệu đã mã hóa |
 | 7 | `PING` | hai chiều | Giữ kết nối, phát hiện chết |
-| 8 | `ERROR` | hub → client | Mã lỗi: `room-locked`, `room-full`, `no-sender`, `kicked-slow` |
+| 8 | `ERROR` | hub → client | Mã lỗi: `room-locked`, `room-full`, `no-sender`, `bad-frame`, `bad-version`, `sender-gone` (`kicked-slow` dự trữ) |
 | 9 | `KICK` | người gửi → hub | Đóng ngay kết nối của một thành viên (người bị từ chối) |
 
 **Thông điệp điều khiển** (JSON, trong `DIRECT`): `pake1`, `pake2`, `pake-confirm`,
 `session` (manifest + `dataKey`, mã hóa bằng khóa cặp), `ready`, `done`, `fail`.
 
-**Khối dữ liệu:** nội dung giải mã là `fileIdx u16 | offset u64 | dữ liệu`; mã hóa AES-256-GCM bằng
-`dataKey` qua `crypt.EncryptAEADTo` có sẵn (nonce 12 byte ngẫu nhiên do hàm tự sinh). Chi tiết
-bản ghi, băm cuối file và ghi chú an ninh nằm trong `contracts.md`, mục 4.
+**Khối dữ liệu:** nội dung giải mã là một bản ghi: `chunk` = `kind u8 (1) | fileIdx u16 |
+offset u64 | dữ liệu`, `file-end` = `kind u8 (2) | fileIdx u16 | sha256`, `all-end` = `kind u8
+(3)` (`src/multiwire/record.go`); mã hóa AES-256-GCM bằng `dataKey` qua `crypt.EncryptAEADTo`
+có sẵn (nonce 12 byte ngẫu nhiên do hàm tự sinh). Chi tiết bản ghi, băm cuối file và ghi chú an
+ninh nằm trong `contracts.md`, mục 4.
 
 ## 6. Dòng lệnh
 
 ```
-croc relay                                    # relay/hub (có sẵn, thêm hỗ trợ multi:)
-croc send --receivers N [--approve] [--timeout 10m] [--relay IP:9009] FILE...
-croc --multi [--relay IP:9009] CODE          # MVP; sau này tự nhận dạng, bỏ --multi
+croc relay                                                      # relay/hub (thêm hỗ trợ multi:)
+croc [--relay IP:9009] send --receivers N [--timeout 10m] FILE...
+croc [--relay IP:9009] [--out THƯ_MỤC] --multi CODE             # MVP; sau này tự nhận dạng
 ```
+
+- `--relay`, `--pass`, `--out`, `--debug` là cờ **toàn cục**: phải đứng **trước** `send`
+  (`croc send --relay ...` báo `flag provided but not defined`).
+- Mật khẩu relay: đặt `CROC_PASS` trong môi trường thay vì `--pass` (để không lộ trong lịch sử
+  shell).
+- Không có `--out` thì file lưu ở **thư mục đang đứng** khi chạy lệnh; thư mục `--out` phải có
+  sẵn; file trùng tên đã có thì người nhận từ chối trước khi tải.
+- `--code` tự đặt nên là ba từ (`apple-river-candle`); chuỗi kiểu `hello123` rơi về cách chia
+  cũ theo ký tự và bí mật PAKE chỉ còn `23`. Bỏ `--code` để croc tự sinh.
+- `--approve` hiện báo "chưa hỗ trợ" (Phase 2). `--timeout` hiện cắt cả phiên, xem mục 11.
 
 ## 7. Rủi ro và cách xử lý
 
@@ -182,3 +214,23 @@ croc --multi [--relay IP:9009] CODE          # MVP; sau này tự nhận dạng,
 - Quy ước repo: không đẩy lên Git trừ khi được yêu cầu; khi đó dùng `~/dotfiles/git-pr`
   (xem `AGENTS.md`).
 - Thử relay cục bộ: `croc relay`. Thử trên mạng thật: relay trên VM Azure do D dựng.
+
+## 11. Vấn đề phát hiện khi chạy thử qua Azure (21/11/2026)
+
+Trạng thái chi tiết từng mốc và hướng dẫn làm từng việc nằm ở [`phan-cong.md`](phan-cong.md).
+
+Lần chạy đầu: 1 người gửi (file zip 1,48 GB) → 2 người nhận qua relay Azure. Cả hai việc dưới
+đây đã được giao ở Phase 2 trong [`phan-cong.md`](phan-cong.md).
+
+1. **`--timeout` cắt cả phiên, không chỉ phòng chờ (lỗi, D sửa).** Cờ được mô tả là "thời gian chờ
+   người nhận" (mặc định 10 phút), nhưng `src/multisend/client.go` dùng `context.WithTimeout`
+   bao quanh **toàn bộ** phiên: phòng chờ, tải lên và chờ `done`. Hết hạn giữa lúc tải lên thì
+   kết nối bị đóng và người gửi chỉ báo
+   `connection write failed: ... use of closed network connection`, không nói là hết giờ.
+   File lớn qua mạng nhà gần như chắc chắn vượt 10 phút. Tạm thời: `--timeout 3h` hoặc
+   `--timeout 0` (tắt).
+2. **Không có giao diện trong terminal (thiếu tính năng, T làm).** Người gửi chỉ in code và một
+   dòng "đã tải lên X byte" ở cuối: không biết ai đã vào, ai sẵn sàng, tiến độ hay tốc độ của
+   từng người. Người nhận chỉ in `X / Y bytes`, không có % hay tốc độ. Phần ống dẫn đã có sẵn:
+   người nhận đã gửi `progress` qua `DIRECT` và `multisend.SendOptions.Progress` đã tồn tại,
+   nhưng `src/cli/multi.go` chưa gắn nó vào nên không có gì được vẽ.
