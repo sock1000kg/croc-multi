@@ -95,13 +95,20 @@ tải lên ≈ kích thước file (dòng tóm tắt của người gửi), khô
 
 ## 6. Ghi kết quả
 
-Mỗi người nhận một dòng trong `docs/multi-e2e-test.md`:
+Người gửi và người nhận đều in dòng `bench:` khi xong (định dạng ở `phan-cong.md`, việc "Giao
+diện terminal"). Lấy ra bằng:
 
-| Lượt | Người nhận | iperf3 lên / xuống (Mbit/s) | File | Thời gian (TUI) | Mbit/s (TUI) | `sha256` khớp |
+```bash
+croc ... 2> lượt-1.log; grep '^bench:' lượt-1.log
+```
+
+Mỗi người nhận một dòng trong `docs/multi-e2e-test.md`, số lấy từ dòng `bench: role=recv`:
+
+| Lượt | Người nhận | iperf3 lên / xuống (Mbit/s) | bytes | seconds | mbps | `sha256` khớp |
 |---|---|---|---|---|---|---|
 
-Kèm cho mỗi lượt: dòng tóm tắt của người gửi (byte đã tải lên, thời gian, người chậm nhất) và
-ảnh Network Out / CPU của VM.
+Kèm cho mỗi lượt: dòng `bench: role=send` của người gửi (có `uploaded` và `ratio`, phải ≈ 1.00)
+và ảnh Network Out / CPU của VM.
 
 ## 7. Dọn dẹp (D)
 

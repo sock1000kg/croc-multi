@@ -389,9 +389,40 @@ terminal Linux.
 
 Phát hiện khi chạy thử qua Azure (`plan.md` mục 11). **T làm phía người gửi** (vùng của N:
 `src/multisend`, phần gửi của `src/cli/multi.go`; báo N trước khi sửa). **L làm phía người nhận**
-(vùng của chính L: `src/multirecv`, phần nhận của `src/cli/multi.go`). Hai bên dùng chung một
-định dạng in thời gian/tốc độ (Mbit/s, `1m02s`) để số của người gửi và người nhận so được với
-nhau; thống nhất trước khi viết.
+(vùng của chính L: `src/multirecv`, phần nhận của `src/cli/multi.go`). Cả hai in kết quả theo
+**định dạng chung** ngay dưới đây, để số của người gửi, người nhận, `iperf3` và
+`scripts/bench/azure.sh` so được trực tiếp.
+
+**Định dạng chung (đã chốt, cả T và L làm theo):**
+- **Đơn vị kết quả:** tốc độ bằng **Mbit/s** (`bit / 1 000 000`, một chữ số thập phân), giống
+  `iperf3` và `scripts/bench/azure.sh`. Thời gian bằng **giây, hai chữ số thập phân** (`61.84`),
+  không dùng `1m02s` trong dòng kết quả vì khó tính toán. Kích thước bằng **byte, số nguyên chính
+  xác**.
+- **Tốc độ** = `TotalSize × 8 / giây / 1 000 000`. `TotalSize` là tổng byte file (manifest),
+  không phải byte đã mã hóa, để mọi người tính trên cùng một số.
+- **Đồng hồ:** người gửi bắt đầu ngay trước `StreamFiles` và dừng cho từng người khi nhận `done`
+  của người đó. Người nhận bắt đầu ở khung `DATA` đầu tiên và dừng sau khi bản ghi `all-end` hợp
+  lệ (mọi file đã khớp băm), ngay trước khi gửi `done`. Cả hai **không** tính phòng chờ.
+- **Dòng `bench:`:** in **luôn**, ra stderr, kể cả khi không phải terminal; một dòng, khóa tiếng
+  Anh dạng `key=value`, không dấu cách trong giá trị (tên đã làm sạch, thay dấu cách bằng `_`),
+  để `grep '^bench:'` rồi dán vào bảng kết quả:
+
+```
+bench: role=send-peer id=3 name=an-pc bytes=1485169722 seconds=61.84 mbps=192.1 result=done
+bench: role=send-peer id=2 name=binh-laptop bytes=1485169722 seconds=63.12 mbps=188.2 result=done
+bench: role=send n=2 done=2 bytes=1485169722 uploaded=1486955012 ratio=1.001 seconds=63.12 mbps=188.2
+bench: role=recv name=an-pc bytes=1485169722 seconds=61.90 mbps=191.9 result=done
+```
+
+  - `role=send-peer`: một dòng cho mỗi người nhận khi người đó kết thúc;
+    `result=done|failed|left`. Người lỗi vẫn in, `seconds` tính tới lúc lỗi, `mbps` tính trên số
+    byte đã báo qua `progress`.
+  - `role=send`: tóm tắt cuối. `uploaded` = giá trị `sent` của `StreamFiles`;
+    `ratio = uploaded / bytes` (3 chữ số thập phân, phải ≈ 1.00x dù N lớn);
+    `seconds` = tới khi người cuối cùng kết thúc.
+  - `role=recv`: dòng của người nhận; `result=done|failed`.
+- **Hiển thị trực tiếp** (dòng tiến độ, thanh tiến độ) dùng gì cũng được cho dễ đọc (thanh của
+  `termui` in MB/s); chỉ dòng kết quả và dòng `bench:` phải theo định dạng trên.
 
 **Mục tiêu:**
 
@@ -402,14 +433,19 @@ Người gửi:
   [2] binh-laptop sẵn sàng (1/2)
   [3] an-pc (198.51.100.7) đã vào
   [3] an-pc sẵn sàng (2/2), bắt đầu gửi
-  [2] binh-laptop 64% 11.8 MB/s | [3] an-pc 61% 11.2 MB/s | tải lên 11.9 MB/s
-  [3] an-pc xong: 1.38 GiB trong 58s (204 Mbit/s)
-  Tóm tắt: 2/2 xong. Tải lên 1.38 GiB trong 1m02s (190 Mbit/s); chậm nhất [2] 1m02s
+  [2] binh-laptop 64% 23.6 MB/s | [3] an-pc 61% 23.1 MB/s | tải lên 23.8 MB/s
+  [3] an-pc xong: 1.38 GiB trong 61.84 s (192.1 Mbit/s)
+  [2] binh-laptop xong: 1.38 GiB trong 63.12 s (188.2 Mbit/s)
+  Tóm tắt: 2/2 xong. Tải lên 1.38 GiB (1.001x) trong 63.12 s (188.2 Mbit/s); chậm nhất [2]
+  bench: role=send-peer id=3 name=an-pc bytes=1485169722 seconds=61.84 mbps=192.1 result=done
+  bench: role=send-peer id=2 name=binh-laptop bytes=1485169722 seconds=63.12 mbps=188.2 result=done
+  bench: role=send n=2 done=2 bytes=1485169722 uploaded=1486955012 ratio=1.001 seconds=63.12 mbps=188.2
 Người nhận:
   Đang chờ người gửi... / Đã vào phòng, chờ người gửi bắt đầu
-  wider-face-yolo.zip  64% |██████▍   | (905 MB/1.4 GB, 11 MB/s) [1m20s:45s]
-  Đã nhận 1.38 GiB trong 1m02s (190 Mbit/s)
+  wider-face-yolo.zip  64% |██████▍   | (905 MB/1.4 GB, 23 MB/s) [40s:22s]
+  Đã nhận 1.38 GiB trong 61.90 s (191.9 Mbit/s)
   Đã lưu: /home/binh/nhan/wider-face-yolo.zip
+  bench: role=recv name=an-pc bytes=1485169722 seconds=61.90 mbps=191.9 result=done
 ```
 
 **Đã có:** người nhận gửi `progress` (tối đa 2 lần/giây, có `bytes`) qua `DIRECT`;
@@ -437,12 +473,10 @@ gắn `Progress` nên người gửi không in gì; chưa có trạng thái `joi
    `multisend.Send` trả về thì dừng ticker và in tóm tắt từ `map`.
 6. Không phải terminal (`_, isTTY := termui.Output(os.Stderr)` trả `false`): không dùng `\r`,
    chỉ in dòng sự kiện và mỗi 5 giây một dòng tiến độ.
-7. **Đo thời gian (thay cho benchmark khi chạy trên nhiều máy thật).** Đồng hồ bắt đầu ngay
-   trước `StreamFiles`, **không** tính thời gian ở phòng chờ (người vào chậm không làm sai số).
-   Báo cho UI qua `PeerProgress{State: "sending"}` lúc bắt đầu. Khi một người `done`, in thời
-   gian từ lúc bắt đầu tới `done` của người đó và tốc độ `TotalSize*8/giây` (Mbit/s). Tóm tắt
-   cuối in tổng byte tải lên (giá trị `sent` của `StreamFiles`), thời gian tải lên, tốc độ và
-   người chậm nhất. Dùng đơn vị Mbit/s để so được với `iperf3`.
+7. **Đo thời gian (thay cho benchmark khi chạy trên nhiều máy thật):** theo "Định dạng chung"
+   ở trên. Báo cho UI lúc bắt đầu qua `PeerProgress{State: "sending"}`. Để in được `uploaded`,
+   `Send` cần trả `sent` ra ngoài: thêm trường `Uploaded int64` vào một kiểu kết quả, hoặc báo
+   qua `PeerProgress{State: "uploaded", Bytes: sent}` trước khi trả về.
 
 **Cách làm, người nhận (L)** (`src/cli/multi.go` + `src/multirecv/client.go`):
 1. Thêm `Status func(msg string)` vào `multirecv.ReceiveOptions` (sửa `contracts.md` mục 5.4).
@@ -454,9 +488,9 @@ gắn `Progress` nên người gửi không in gì; chưa có trạng thái `joi
    ColorEnabled: color})` với `w, color := termui.Output(os.Stderr)`. Tổng chỉ biết sau
    `JoinSession`, nên tạo thanh ở lần gọi `Progress` đầu tiên rồi `bar.Set64(bytes)`;
    `bar.Finish()` khi xong.
-3. **Đo thời gian:** đồng hồ bắt đầu ở khung `DATA` đầu tiên trong `ReceiveStream`, không phải
-   lúc vào phòng (vì người nhận còn chờ những người khác sẵn sàng). Khi xong in
-   "Đã nhận X trong Ys (Z Mbit/s)" qua `Status`.
+3. **Đo thời gian:** theo "Định dạng chung" ở trên: đồng hồ trong `ReceiveStream`, bắt đầu ở
+   khung `DATA` đầu tiên, dừng sau `all-end` hợp lệ. In dòng "Đã nhận ..." và dòng
+   `bench: role=recv ...` qua `Status`. Tên lấy từ `--name` (hoặc hostname).
 
 **Kiểm chứng:** chạy 4 người nhận qua relay Azure: người gửi thấy từng người vào và sẵn sàng;
 tiến độ và tốc độ của từng người cập nhật; tắt một người thì dòng đó hiện "mất kết nối"; tóm tắt
