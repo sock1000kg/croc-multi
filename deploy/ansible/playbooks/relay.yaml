@@ -5,6 +5,8 @@
   become: true
   vars_files:
     - ../vars.yaml
+  vars:
+    iperf3_port: 5201 # must match the AllowIperf3 rule in deploy/terraform/main.tf
 
   tasks:
     - name: Baseline tools
@@ -42,9 +44,42 @@
         state: started
         daemon_reload: true
 
+    # iperf3 server so anyone can measure their line to the relay with
+    # `iperf3 -c <ip>` (upload) and `iperf3 -c <ip> -R` (download).
+    # Set iperf3_enabled: false in vars.yaml to stop and disable it.
+    - name: iperf3 systemd unit
+      template:
+        src: ../templates/iperf3.service.j2
+        dest: /etc/systemd/system/iperf3.service
+        mode: "0644"
+      notify: restart iperf3
+      when: iperf3_enabled | default(true) | bool
+
+    - name: Enable and start iperf3
+      systemd:
+        name: iperf3
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: iperf3_enabled | default(true) | bool
+
+    - name: Stop and disable iperf3 when turned off
+      systemd:
+        name: iperf3
+        enabled: false
+        state: stopped
+      failed_when: false # fine if the unit was never installed
+      when: not (iperf3_enabled | default(true) | bool)
+
   handlers:
     - name: restart croc-relay
       systemd:
         name: croc-relay
+        state: restarted
+        daemon_reload: true
+
+    - name: restart iperf3
+      systemd:
+        name: iperf3
         state: restarted
         daemon_reload: true

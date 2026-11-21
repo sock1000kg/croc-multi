@@ -56,8 +56,9 @@ resource "azurerm_network_security_group" "relay" {
     destination_address_prefix = "*"
   }
 
-  # iperf3 throughput tests against the relay VM. Harmless while no iperf3
-  # server is running (nothing listens on 5201); start one only when testing.
+  # iperf3 throughput tests against the relay VM. The Ansible playbook runs an
+  # iperf3 server on 5201 permanently (iperf3_enabled in vars.yaml). It is open
+  # to anyone, who could use the VM's bandwidth: turn it off when not testing.
   security_rule {
     name                       = "AllowIperf3"
     priority                   = 120

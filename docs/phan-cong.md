@@ -198,7 +198,8 @@ trước khi sang M2.
   bằng khóa SSH (`admin_ssh_key_path` trong `terraform.tfvars`), không có mật khẩu.
 - Build ở máy mình: `deploy/build.sh` tạo `dist/croc-linux-amd64` từ thư mục đang checkout (VM
   không cài Go, không clone repo).
-- Ansible (`deploy/ansible/playbooks/relay.yaml`): cài `iperf3`, tạo user `croc-relay`, chép
+- Ansible (`deploy/ansible/playbooks/relay.yaml`): cài `iperf3` và chạy nó thường trực trên
+  cổng 5201 (`iperf3.service`; tắt bằng `iperf3_enabled: false` trong `vars.yaml`), tạo user `croc-relay`, chép
   binary vào `/usr/local/bin/croc`, tạo unit `systemd` chạy
   `croc relay --ports {{ relay_ports }} {{ relay_extra_args }}` với `CROC_PASS` lấy từ
   `relay_password`. Triển khai lại = `deploy/build.sh` rồi chạy lại playbook.
@@ -246,7 +247,11 @@ Kết luận:
 - Đo cục bộ (relay `localhost`, 500 MB, 16 CPU): 1-1 ~98 MB/s, multi 1 người ~93 MB/s, tức code
   đủ nhanh cho mọi đường truyền gia đình.
 
-Chạy lại: `CROC_PASS=... scripts/bench/azure.sh ./croc <ip>:9009 300 1 3`.
+Chạy lại: `CROC_PASS=... scripts/bench/azure.sh ./croc <ip>:9009 300 1 3`. Trên nhiều máy
+thật (ma trận MVP) không dùng script này: mỗi người chạy `iperf3 -c <ip> -t 5` và `-R` (VM luôn
+chạy `iperf3` server, xem M4), rồi gửi như bình thường và chép dòng thời gian/tốc độ mà giao
+diện terminal in ra (việc của T) vào `docs/multi-e2e-test.md`. Trước khi TUI xong, đo bằng tay
+từ lúc người gửi bắt đầu gửi tới lúc từng người nhận báo xong (không tính phòng chờ).
 
 **Việc:** `scripts/bench/run.sh` chạy file 1 GB tới 1, 2, 4, 8 người nhận; in thời gian và số
 byte người gửi tải lên; chạy kèm một lần `croc` 1-1 cùng file, cùng relay.
@@ -290,7 +295,7 @@ croc --relay <ip>:9009 --out ~/nhan --multi CODE
 
 Mọi người build từ cùng `main` (`git log --oneline -1` giống nhau). `--timeout 3h` là cách
 tránh lỗi `--timeout` cho tới khi D sửa. `iperf3 -c <ip> -t 5` (tải lên) và `-R` (tải xuống)
-cần `iperf3` cài ở máy mình và `iperf3 -s -1 -D` chạy trên VM.
+cần `iperf3` cài ở máy mình (`sudo apt install iperf3`); VM luôn chạy `iperf3` server.
 
 **Tiêu chí đạt cho mỗi lượt:**
 - `sha256sum` giống nhau trên mọi máy.
@@ -396,11 +401,12 @@ Người gửi:
   [3] an-pc (198.51.100.7) đã vào
   [3] an-pc sẵn sàng (2/2), bắt đầu gửi
   [2] binh-laptop 64% 11.8 MB/s | [3] an-pc 61% 11.2 MB/s | tải lên 11.9 MB/s
-  [3] an-pc xong
-  Tóm tắt: 2/2 xong, 1.38 GiB trong 2m01s, đã tải lên 1.38 GiB
+  [3] an-pc xong: 1.38 GiB trong 58s (204 Mbit/s)
+  Tóm tắt: 2/2 xong. Tải lên 1.38 GiB trong 1m02s (190 Mbit/s); chậm nhất [2] 1m02s
 Người nhận:
   Đang chờ người gửi... / Đã vào phòng, chờ người gửi bắt đầu
   wider-face-yolo.zip  64% |██████▍   | (905 MB/1.4 GB, 11 MB/s) [1m20s:45s]
+  Đã nhận 1.38 GiB trong 1m02s (190 Mbit/s)
   Đã lưu: /home/binh/nhan/wider-face-yolo.zip
 ```
 
@@ -429,6 +435,12 @@ gắn `Progress` nên người gửi không in gì; chưa có trạng thái `joi
    `multisend.Send` trả về thì dừng ticker và in tóm tắt từ `map`.
 6. Không phải terminal (`_, isTTY := termui.Output(os.Stderr)` trả `false`): không dùng `\r`,
    chỉ in dòng sự kiện và mỗi 5 giây một dòng tiến độ.
+7. **Đo thời gian (thay cho benchmark khi chạy trên nhiều máy thật).** Đồng hồ bắt đầu ngay
+   trước `StreamFiles`, **không** tính thời gian ở phòng chờ (người vào chậm không làm sai số).
+   Báo cho UI qua `PeerProgress{State: "sending"}` lúc bắt đầu. Khi một người `done`, in thời
+   gian từ lúc bắt đầu tới `done` của người đó và tốc độ `TotalSize*8/giây` (Mbit/s). Tóm tắt
+   cuối in tổng byte tải lên (giá trị `sent` của `StreamFiles`), thời gian tải lên, tốc độ và
+   người chậm nhất. Dùng đơn vị Mbit/s để so được với `iperf3`.
 
 **Cách làm, người nhận** (`src/cli/multi.go` + `src/multirecv/client.go`):
 1. Thêm `Status func(msg string)` vào `multirecv.ReceiveOptions` (sửa `contracts.md` mục 5.4).
@@ -440,11 +452,16 @@ gắn `Progress` nên người gửi không in gì; chưa có trạng thái `joi
    ColorEnabled: color})` với `w, color := termui.Output(os.Stderr)`. Tổng chỉ biết sau
    `JoinSession`, nên tạo thanh ở lần gọi `Progress` đầu tiên rồi `bar.Set64(bytes)`;
    `bar.Finish()` khi xong.
+3. **Đo thời gian:** đồng hồ bắt đầu ở khung `DATA` đầu tiên trong `ReceiveStream`, không phải
+   lúc vào phòng (vì người nhận còn chờ những người khác sẵn sàng). Khi xong in
+   "Đã nhận X trong Ys (Z Mbit/s)" qua `Status`.
 
 **Kiểm chứng:** chạy 4 người nhận qua relay Azure: người gửi thấy từng người vào và sẵn sàng;
 tiến độ và tốc độ của từng người cập nhật; tắt một người thì dòng đó hiện "mất kết nối"; tóm tắt
 cuối liệt kê đủ từng người; người nhận có thanh tiến độ và in đường dẫn file đã lưu;
-`croc ... 2> log.txt` cho ra file đọc được (không có `\r`).
+`croc ... 2> log.txt` cho ra file đọc được (không có `\r`). Đối chiếu đo thời gian: chạy
+`scripts/bench/azure.sh` và một lần gửi tay với cùng file trên cùng máy; tốc độ TUI in ra lệch
+không quá ~10% so với script.
 
 ### Tăng cứng hub (D)
 

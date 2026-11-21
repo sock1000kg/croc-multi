@@ -1,0 +1,19 @@
+[Unit]
+Description=iperf3 server for relay throughput tests
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# DynamicUser: runs as a throwaway unprivileged user; iperf3 needs no files.
+DynamicUser=true
+ExecStart=/usr/bin/iperf3 --server --port {{ iperf3_port }}
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
