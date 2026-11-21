@@ -62,6 +62,8 @@ từng người vào** và **đuổi người bị từ chối** mới là thứ
    "Tăng cứng hub" của D.
 7. **Chưa kiểm chứng:** tốc độ thật của một luồng TCP so với cách croc mở tới 8 kết nối dữ
    liệu. Mốc M3 đo việc này; nếu thiếu thì thêm "làn dữ liệu" (nhiều kết nối) ở Phase 2.
+   **Đã đo (21/11, M3 trong `phan-cong.md`):** qua relay Azure, multi-send 1 người nhận đạt ~181
+   Mbit/s so với ~188 Mbit/s của croc 1-1 (chênh ~4%), nên không cần làn dữ liệu.
 
 ## 3. Kiến trúc
 
@@ -184,7 +186,7 @@ croc [--relay IP:9009] [--out THƯ_MỤC] --multi CODE             # MVP; sau n�
 
 | Rủi ro | Xử lý |
 |---|---|
-| Một luồng TCP chậm hơn nhiều kết nối của croc | M3 đo sớm; nếu thiếu thì "làn dữ liệu" là việc Must |
+| Một luồng TCP chậm hơn nhiều kết nối của croc | Đã đo (M3, 21/11): chênh ~4% so với croc 1-1, bỏ "làn dữ liệu" |
 | Người nhận chậm kéo cả phiên | Hàng đợi giới hạn + loại sau 30 giây; ghi rõ là đánh đổi |
 | Relay cũ làm người gửi treo | Bắt buộc chờ `JOIN_ACK`, báo lỗi rõ ràng |
 | Xung đột sửa `tcp.go` / `cli.go` | D giữ đúng một nhánh trong `tcp.go`; phần CLI nằm trong `cli/multi.go`, `cli.go` chỉ thêm một dòng đăng ký, thống nhất ở M0 |
@@ -203,10 +205,10 @@ croc [--relay IP:9009] [--out THƯ_MỤC] --multi CODE             # MVP; sau n�
 
 - **Tuần 1 (MVP):** M0 (ngày 1), M1a–M1d song song (ngày 2–4), M2 relay thật (ngày 5–6), M4 Azure và
   bài thử đầu-cuối từ xa (ngày 6–7). Cuối tuần 1 phải chạy được 1 gửi → 3 nhận qua Azure.
-- **Tuần 2:** đo M3 qua Azure; Phase 2 Must: duyệt người vào + chặn người lạ, kéo thả, tiến độ,
-  tăng cứng hub.
-- **Tuần 3:** làn dữ liệu / vòng bù nếu cần, sửa lỗi, biểu đồ benchmark, chạy lại bài thử
-  đầu-cuối; đóng băng trước hạn 2 ngày.
+- **Tuần 2:** Phase 2 Must: sửa `--timeout`, duyệt người vào + chặn người lạ, kéo thả, giao
+  diện terminal, tăng cứng hub.
+- **Tuần 3:** vòng bù nếu kịp, sửa lỗi, biểu đồ benchmark, chạy lại bài thử đầu-cuối; đóng
+  băng trước hạn 2 ngày.
 - Nếu chỉ có 2 tuần: giữ tuần 1 như trên; tuần 2 làm các việc Must của N và D, bỏ vòng bù.
 
 ## 10. Ghi chú vận hành

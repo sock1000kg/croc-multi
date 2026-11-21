@@ -46,7 +46,7 @@ M0 ──┬─ D: M1a ───────────┐
      ├─ N: M1c ───────────┼─► M2 (relay thật) ─► M4 (Azure) ─► MVP (thử từ xa)
      └─ L: M1d ───────────┘
 D còn làm khung deploy/ + Terraform song song từ ngày 1 (không phụ thuộc code hub).
-M3 (đo tốc độ) bắt đầu ngay khi M2 chạy, làm sang tuần 2.
+M3 (đo tốc độ) đã đo ngày 21/11, xem mục M3.
 ```
 
 ### Trạng thái (cập nhật 21/11/2026)
@@ -59,8 +59,8 @@ M3 (đo tốc độ) bắt đầu ngay khi M2 chạy, làm sang tuần 2.
 | M1c gửi | ✅ | `multisend.Send`; chỉ file thường, chưa có thư mục/`--approve`/giới hạn tốc độ |
 | M1d nhận | ✅ | `multirecv.Receive`; `TestFullM1InMemory` là bài thử "M1 xong" |
 | M2 relay thật | ✅ | Thử tay một máy 18/11: 3 người nhận, `sha256` khớp, tải lên ≈ 1× file, 1-1 vẫn chạy. Relay cũ: báo lỗi ngay nhưng chưa đúng câu (xem "Tăng cứng hub") |
-| M4 Azure | ✅ | Relay `4.194.7.75:9009` đang chạy (triển khai lại sau mỗi lần sửa hub: `deploy/build.sh` + playbook) |
-| M3 đo tốc độ | ❌ | Chưa có `scripts/bench/` và `docs/multi-e2e-test.md` |
+| M4 Azure | ✅ | Relay `138.91.38.64:9009` đang chạy (dựng lại 21/11 sau khi bản cũ `4.194.7.75` bị xóa) (triển khai lại sau mỗi lần sửa hub: `deploy/build.sh` + playbook) |
+| M3 đo tốc độ | ✅ | Đo 21/11 qua Azure (`scripts/bench/azure.sh`): multi-send 1 người nhận ≈ croc 1-1 (chênh ~4%); không cần làn dữ liệu. Số nhiều người nhận lấy từ ma trận MVP |
 | MVP từ xa | 🟡 | Lượt đầu 21/11: 1 gửi (1,48 GB) → 2 nhận; người gửi chết giữa chừng do lỗi `--timeout` (`plan.md` mục 11). Chạy lại ma trận với `--timeout 3h` |
 
 ## M0. Khóa hợp đồng (ngày 1, T dẫn dắt)
@@ -214,7 +214,39 @@ trước khi sang M2.
 3. Chạy lại bài thử M2 bằng `croc --relay <ip>:9009 ...` (cờ toàn cục đứng trước `send`, mật
    khẩu trong `CROC_PASS`) từ máy của D, rồi từ máy của một người khác ở mạng khác.
 
-## M3. Đo tốc độ (L chủ trì, N hỗ trợ; bắt đầu khi M2 chạy, xong trong tuần 2)
+## M3. Đo tốc độ (✅ đo 21/11)
+
+Qua mạng thật, tốc độ tuyệt đối bị giới hạn bởi chặng chậm nhất (upload nhà người gửi, download
+người nhận chậm nhất, VM `B1s`), nên M3 trả lời câu hỏi **tương đối**: cùng máy, cùng relay,
+multi-send 1 người nhận (1 kết nối) có chậm hơn croc 1-1 (4 kết nối) nhiều không.
+
+**Kết quả (đo 21/11/2026, `scripts/bench/azure.sh`):** một laptop ở Việt Nam (WSL2) làm cả
+người gửi lẫn người nhận, relay `Standard_B1s` ở Azure `southeastasia`, file ngẫu nhiên 300 MB,
+mỗi trường hợp chạy 2 lần, `sha256` khớp ở mọi lần.
+
+| Đo | Lần 1 | Lần 2 |
+|---|---|---|
+| `iperf3`, 1 luồng TCP, lên / xuống | 296 / 297 Mbit/s | |
+| `iperf3`, 4 luồng song song, lên | 531 Mbit/s | |
+| croc 1-1 qua relay (4 kết nối dữ liệu) | 208 Mbit/s (12,1 s) | 168 Mbit/s (15,0 s) |
+| multi-send, 1 người nhận (1 kết nối) | 187 Mbit/s (13,5 s) | 176 Mbit/s (14,3 s) |
+| multi-send, 3 người nhận trên cùng máy | 58 Mbit/s mỗi người (43 s) | 25 Mbit/s mỗi người (99 s) |
+| Số byte người gửi tải lên (mọi N) | 314 947 292 (1,0012 × file) | |
+
+Kết luận:
+- **Multi-send 1 người nhận ≈ croc 1-1** (181 so với 188 Mbit/s trung bình, chênh ~4%, nhỏ
+  hơn độ dao động giữa hai lần chạy). Đạt mục tiêu "chậm hơn không quá ~20%" ở `plan.md` mục 8.
+- `iperf3` cho thấy một luồng TCP (~295 Mbit/s) chậm hơn 4 luồng (~530 Mbit/s), nhưng cả croc
+  1-1 lẫn multi-send đều dừng ở ~180–200 Mbit/s, tức nghẽn nằm chỗ khác (CPU mã hóa, VM 1 vCPU),
+  không phải ở số kết nối. **Không cần "làn dữ liệu"**.
+- Số byte tải lên không tăng theo N: đúng mục tiêu chính.
+- Số N=3 **không dùng để kết luận**: cả 3 người nhận chung đường xuống của một laptop và VM 1
+  vCPU sao chép 3 lần; hai lần chênh nhau 2,3 lần (tín dụng CPU của VM còn 34, không bị bóp).
+  Tốc độ với nhiều người nhận phải đo trong ma trận MVP với các máy thật khác nhau.
+- Đo cục bộ (relay `localhost`, 500 MB, 16 CPU): 1-1 ~98 MB/s, multi 1 người ~93 MB/s, tức code
+  đủ nhanh cho mọi đường truyền gia đình.
+
+Chạy lại: `CROC_PASS=... scripts/bench/azure.sh ./croc <ip>:9009 300 1 3`.
 
 **Việc:** `scripts/bench/run.sh` chạy file 1 GB tới 1, 2, 4, 8 người nhận; in thời gian và số
 byte người gửi tải lên; chạy kèm một lần `croc` 1-1 cùng file, cùng relay.
@@ -227,8 +259,10 @@ byte người gửi tải lên; chạy kèm một lần `croc` 1-1 cùng file, c
 - Chạy hai kiểu: một máy (relay `localhost`, đo giới hạn CPU/mã hóa) và qua relay Azure (đo
   băng thông thật). Chỉ kiểu thứ hai mới đưa vào kết luận.
 
-**Kiểm chứng:** chạy script, dán bảng kết quả vào `docs/multi-e2e-test.md`. Đối chiếu với mục
-8 của `plan.md`. Nếu 1 người nhận chậm hơn mục tiêu, mở việc "làn dữ liệu" (Phase 2 Must).
+**Kiểm chứng ban đầu:** chạy script, dán bảng kết quả vào `docs/multi-e2e-test.md`. Đối chiếu
+với mục 8 của `plan.md`. Nếu 1 người nhận chậm hơn mục tiêu, mở việc "làn dữ liệu" (Phase 2
+Must). Thực tế: kết quả nằm ở trên; `docs/multi-e2e-test.md` vẫn chưa có (L tạo khi chạy ma
+trận MVP, chép bảng này vào).
 
 ## Mốc MVP: bài thử đầu-cuối từ xa (cả nhóm, ngày 7)
 
@@ -277,9 +311,10 @@ không phụ thuộc Internet. Không bắt buộc.
 
 # Phase 2: Tính năng bổ sung (tuần 2–3)
 
-Bắt đầu ngay khi M2 chạy được; các việc độc lập nên làm song song với M3. Nếu chỉ còn 2 tuần
+Bắt đầu ngay khi M2 chạy được; các việc độc lập nên làm song song. Nếu chỉ còn 2 tuần
 thì giữ 2 việc N (duyệt + chặn người lạ, kéo thả), giao diện terminal của T, tăng cứng hub và
-sửa `--timeout` của D; vòng bù và làn dữ liệu chỉ làm khi M3 cho thấy cần.
+sửa `--timeout` của D; vòng bù khi còn thời gian. Làn dữ liệu bỏ: M3 cho thấy một kết nối đã
+ngang croc 1-1.
 
 ## Must
 
@@ -476,7 +511,7 @@ phiên đang tải lên, và người gửi chỉ báo `use of closed network co
 - Test đơn vị trong `m1_integration_test.go`: phòng chờ trống với `Timeout: 200ms` trả lỗi hết
   giờ.
 
-### Làn dữ liệu (D + L) — chỉ khi M3 cho thấy một luồng chậm
+### Làn dữ liệu (D + L) — KHÔNG LÀM: M3 (21/11) cho thấy 1 kết nối ≈ croc 1-1 (giữ mô tả để tham khảo)
 
 **Việc:** thêm k kết nối dữ liệu phụ từ người gửi để vượt giới hạn của một luồng TCP.
 
@@ -562,8 +597,8 @@ phần thiếu.
 | Tuần | D | T | N | L |
 |---|---|---|---|---|
 | 1 (**MVP**) | M0, M1a, M2, M4 (Azure) | M0, M1b, ghép M2 | M0, M1c, ghép M2 | M0, M1d, ghép M2, khung `multi-e2e-test.md` |
-| 2 | Sửa `--timeout`, tăng cứng hub | Review mật mã, giao diện terminal | Duyệt người vào, kéo thả | M3 (đo qua Azure), `--name`, vòng bù (nhận lệch thứ tự trước) |
-| 3 | Hub cho vào lại (vòng bù), làn dữ liệu (cùng L, nếu cần), sửa lỗi | Tự nhận dạng code, sửa lỗi, review cuối | Gửi thư mục, `--throttleUpload`, Enter để bắt đầu | Chạy lại ma trận đầu-cuối, biểu đồ benchmark |
+| 2 | Sửa `--timeout`, tăng cứng hub | Review mật mã, giao diện terminal | Duyệt người vào, kéo thả | `--name`, vòng bù (nhận lệch thứ tự trước) |
+| 3 | Hub cho vào lại (vòng bù), sửa lỗi | Tự nhận dạng code, sửa lỗi, review cuối | Gửi thư mục, `--throttleUpload`, Enter để bắt đầu | Vòng bù (tiếp), chạy lại ma trận đầu-cuối, biểu đồ benchmark (`scripts/bench/azure.sh`) |
 
 **Cổng cuối tuần 1:** MVP chạy từ xa qua Azure (ma trận lượt 1–4 đạt). Chưa đạt thì tuần 2 chỉ
 sửa MVP, không bắt đầu Phase 2.
