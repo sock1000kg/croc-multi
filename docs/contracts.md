@@ -371,7 +371,7 @@ croc --multi [--relay IP:9009] [--pass RELAYPASS] [--out THƯ_MỤC] CODE
 
 - `--receivers N` (người gửi) vừa bật chế độ multi vừa là số người nhận cần duyệt; người thứ N+1 bị `reject`/`KICK`.
 - `--name TÊN` (người nhận): nhãn hiển thị cho người gửi, mặc định là hostname.
-- `--multi` (người nhận) là cờ rõ ràng cho MVP; tự nhận dạng code multi là việc Should.
+- `--multi` (người nhận) là cờ bắt buộc; không làm tự nhận dạng code multi.
 - **Mã thoát:** 0 = mọi người nhận xong; 1 = có người nhận lỗi/bị loại/bị từ chối (liệt kê
   trên stderr); 2 = sai cách dùng.
 - **Tiến độ người gửi (stderr), mỗi người một dòng**, cập nhật tại chỗ:

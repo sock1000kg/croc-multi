@@ -76,8 +76,8 @@ từng người vào** và **đuổi người bị từ chối** mới là thứ
 ### 3.1 Luồng chạy
 
 1. **Người gửi:** `croc send --receivers N FILE...` sinh code, in ra, kết nối relay vào phòng
-   `multi:<RoomName>` với vai trò SENDER. **Người nhận:** `croc --multi CODE` (cờ rõ ràng cho
-   MVP; tự nhận dạng code multi là việc Should) vào cùng phòng với vai trò RECEIVER.
+   `multi:<RoomName>` với vai trò SENDER. **Người nhận:** `croc --multi CODE` (cờ bắt buộc; không
+   làm tự nhận dạng code multi) vào cùng phòng với vai trò RECEIVER.
 2. **Phòng chờ:** mỗi người nhận vào thì người gửi chạy PAKE với người đó (khung `DIRECT`),
    rồi gửi `session` (manifest + `dataKey`, mã hóa bằng khóa cặp). Người gửi gửi N trong `JOIN`,
    nên **hub** giữ tối đa N người nhận cùng lúc; người thứ N+1 nhận `ERROR room-full`. Ai sai
@@ -85,7 +85,7 @@ từng người vào** và **đuổi người bị từ chối** mới là thứ
    là việc Phase 2 (hiện báo "chưa hỗ trợ").
 3. **Bắt đầu:** khi đủ N người sẵn sàng. (Nhấn Enter để bắt đầu sớm: chưa làm.) Từ `DATA` đầu
    tiên phòng bị khóa: người vào muộn nhận `ERROR room-locked`, kể cả người vừa rớt mạng muốn
-   vào lại. Phase 2 thêm "vòng bù" để người vào muộn/lỗi nhận tiếp.
+   vào lại. "Vòng bù" để người vào muộn/lỗi nhận tiếp là việc Could (chỉ khi còn thời gian).
 4. **Truyền:** người gửi đọc từng file, cắt khối 32 KB, mã hóa bằng `dataKey`, gửi khung
    `DATA`; hub phát cho mọi người nhận. Người nhận giải mã, ghi qua `receivefs`, kiểm tra
    băm cuối mỗi file.
@@ -169,7 +169,7 @@ ninh nằm trong `contracts.md`, mục 4.
 ```
 croc relay                                                      # relay/hub (thêm hỗ trợ multi:)
 croc [--relay IP:9009] send --receivers N [--timeout 10m] FILE...
-croc [--relay IP:9009] [--out THƯ_MỤC] --multi CODE             # MVP; sau này tự nhận dạng
+croc [--relay IP:9009] [--out THƯ_MỤC] --multi CODE             # luôn cần --multi
 ```
 
 - `--relay`, `--pass`, `--out`, `--debug` là cờ **toàn cục**: phải đứng **trước** `send`
@@ -207,9 +207,9 @@ croc [--relay IP:9009] [--out THƯ_MỤC] --multi CODE             # MVP; sau n�
   bài thử đầu-cuối từ xa (ngày 6–7). Cuối tuần 1 phải chạy được 1 gửi → 3 nhận qua Azure.
 - **Tuần 2:** Phase 2 Must: sửa `--timeout`, duyệt người vào + chặn người lạ, kéo thả, giao
   diện terminal, tăng cứng hub.
-- **Tuần 3:** vòng bù nếu kịp, sửa lỗi, biểu đồ benchmark, chạy lại bài thử đầu-cuối; đóng
+- **Tuần 3:** sửa lỗi, vòng bù chỉ nếu còn thời gian (Could), biểu đồ benchmark, chạy lại bài thử đầu-cuối; đóng
   băng trước hạn 2 ngày.
-- Nếu chỉ có 2 tuần: giữ tuần 1 như trên; tuần 2 làm các việc Must của N và D, bỏ vòng bù.
+- Nếu chỉ có 2 tuần: giữ tuần 1 như trên; tuần 2 làm các việc Must của N, T và D.
 
 ## 10. Ghi chú vận hành
 
@@ -231,7 +231,7 @@ Lần chạy đầu: 1 người gửi (file zip 1,48 GB) → 2 người nhận q
    `connection write failed: ... use of closed network connection`, không nói là hết giờ.
    File lớn qua mạng nhà gần như chắc chắn vượt 10 phút. Tạm thời: `--timeout 3h` hoặc
    `--timeout 0` (tắt).
-2. **Không có giao diện trong terminal (thiếu tính năng, T làm).** Người gửi chỉ in code và một
+2. **Không có giao diện trong terminal (thiếu tính năng; T làm phía gửi, L làm phía nhận).** Người gửi chỉ in code và một
    dòng "đã tải lên X byte" ở cuối: không biết ai đã vào, ai sẵn sàng, tiến độ hay tốc độ của
    từng người. Người nhận chỉ in `X / Y bytes`, không có % hay tốc độ. Phần ống dẫn đã có sẵn:
    người nhận đã gửi `progress` qua `DIRECT` và `multisend.SendOptions.Progress` đã tồn tại,

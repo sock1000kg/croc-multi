@@ -304,7 +304,7 @@ cần `iperf3` cài ở máy mình (`sudo apt install iperf3`); VM luôn chạy 
   relay trước); số byte người gửi tải lên ≈ kích thước file, không nhân với số người nhận.
 
 **Thử lỗi (dùng `Ctrl+C`, tắt Wi‑Fi, hoặc kill tiến trình thay cho việc rút dây):**
-- Tắt một máy nhận ở khoảng 50% (MVP: máy đó lỗi gọn và người gửi báo; Phase 2 có vòng bù thì
+- Tắt một máy nhận ở khoảng 50% (MVP: máy đó lỗi gọn và người gửi báo; nếu làm vòng bù (Could) thì
   máy đó nhận tiếp).
 - Máy thứ tư biết code nhưng vào sau khi đủ người thì bị từ chối.
 - `croc` 1-1 vẫn chạy trên cùng relay.
@@ -317,8 +317,8 @@ không phụ thuộc Internet. Không bắt buộc.
 # Phase 2: Tính năng bổ sung (tuần 2–3)
 
 Bắt đầu ngay khi M2 chạy được; các việc độc lập nên làm song song. Nếu chỉ còn 2 tuần
-thì giữ 2 việc N (duyệt + chặn người lạ, kéo thả), giao diện terminal của T, tăng cứng hub và
-sửa `--timeout` của D; vòng bù khi còn thời gian. Làn dữ liệu bỏ: M3 cho thấy một kết nối đã
+thì giữ 2 việc N (duyệt + chặn người lạ, kéo thả), giao diện terminal (T phía gửi, L phía nhận), tăng cứng hub và
+sửa `--timeout` của D; vòng bù là Could. Làn dữ liệu bỏ: M3 cho thấy một kết nối đã
 ngang croc 1-1.
 
 ## Must
@@ -385,11 +385,13 @@ cùng lúc.
 cả 3 được liệt kê và gửi, kể cả tên có dấu cách. Thử thêm trên Windows Terminal và một
 terminal Linux.
 
-### Giao diện terminal: tiến độ, tốc độ, thông báo vào/ra (T)
+### Giao diện terminal: tiến độ, tốc độ, thông báo vào/ra (T: phía gửi, L: phía nhận)
 
-Phát hiện khi chạy thử qua Azure (`plan.md` mục 11). Việc này trải qua vùng của N
-(`src/multisend`, phần gửi của `src/cli/multi.go`) và L (`src/multirecv`, phần nhận); T làm vì
-tuần 2 ít việc nhất, báo N và L trước khi sửa vùng của họ.
+Phát hiện khi chạy thử qua Azure (`plan.md` mục 11). **T làm phía người gửi** (vùng của N:
+`src/multisend`, phần gửi của `src/cli/multi.go`; báo N trước khi sửa). **L làm phía người nhận**
+(vùng của chính L: `src/multirecv`, phần nhận của `src/cli/multi.go`). Hai bên dùng chung một
+định dạng in thời gian/tốc độ (Mbit/s, `1m02s`) để số của người gửi và người nhận so được với
+nhau; thống nhất trước khi viết.
 
 **Mục tiêu:**
 
@@ -416,7 +418,7 @@ Người nhận:
 tiến độ của croc 1-1 (có %, tốc độ, thời gian còn lại). **Chưa có:** `src/cli/multi.go` không
 gắn `Progress` nên người gửi không in gì; chưa có trạng thái `joined`/`left`.
 
-**Cách làm, người gửi** (`src/multisend/client.go` + file mới `src/cli/multi_ui.go`):
+**Cách làm, người gửi (T)** (`src/multisend/client.go` + file mới `src/cli/multi_ui.go`):
 1. Trong `sendSession`, gọi `report` thêm ở `TypeMemberJoined`
    (`State: "joined"`, `Name: <IP>`) và `TypeMemberLeft` (`State: "left"`).
 2. Lấy tên người nhận mà không đổi chữ ký hàm: luôn truyền một hàm `approve` vào
@@ -442,7 +444,7 @@ gắn `Progress` nên người gửi không in gì; chưa có trạng thái `joi
    cuối in tổng byte tải lên (giá trị `sent` của `StreamFiles`), thời gian tải lên, tốc độ và
    người chậm nhất. Dùng đơn vị Mbit/s để so được với `iperf3`.
 
-**Cách làm, người nhận** (`src/cli/multi.go` + `src/multirecv/client.go`):
+**Cách làm, người nhận (L)** (`src/cli/multi.go` + `src/multirecv/client.go`):
 1. Thêm `Status func(msg string)` vào `multirecv.ReceiveOptions` (sửa `contracts.md` mục 5.4).
    `Receive` gọi nó khi chờ `no-sender` ("Đang chờ người gửi..."), sau `JoinSession` ("Đã vào
    phòng, chờ người gửi bắt đầu") và khi xong ("Đã lưu: <đường dẫn tuyệt đối>" cho từng file,
@@ -534,7 +536,7 @@ phiên đang tải lên, và người gửi chỉ báo `use of closed network co
 
 **Điều kiện trước:** người nhận hiện **chỉ chấp nhận khối theo thứ tự**
 (`multirecv.Receiver.writeChunk` báo lỗi khi `offset > written`). Nhiều làn sẽ làm khối đến lệch
-thứ tự, nên phải làm phần "nhận lệch thứ tự" trong "Vòng bù" trước (L).
+thứ tự, nên phải làm phần "nhận lệch thứ tự" trong "Vòng bù" (Could) trước (L).
 
 **Cách làm:**
 1. Hub (D): cho phép người gửi mở thêm kết nối `JOIN` với vai trò mới `RoleSenderLane = 3`
@@ -548,7 +550,33 @@ thứ tự, nên phải làm phần "nhận lệch thứ tự" trong "Vòng bù"
 **Kiểm chứng:** chạy lại benchmark với 1/2/4 làn; chọn mặc định; ghi số trước/sau vào
 `docs/multi-e2e-test.md`; `sha256` vẫn khớp.
 
-### Vòng bù / người vào muộn / thử lại (L, hub: D)
+## Should
+
+- **Gửi thư mục (N/L).** `multisend.Send` hiện từ chối mọi thứ không phải file thường.
+  - Dùng `croc.GetFilesInfoContext(ctx, files, false, false, nil)`: nó trả `FileInfo` (dùng
+    `FolderSource`, `FolderRemote`, `Name`) và danh sách thư mục rỗng.
+  - Điền `FileEntry.Path` = đường dẫn tương đối dấu `/`, và `Session.EmptyDirs`.
+  - `StreamFiles` nhận đường dẫn đầy đủ theo đúng thứ tự `Idx`.
+  - Phía nhận đã hỗ trợ đường dẫn con và `EmptyDirs` qua `receivefs`.
+- **Giới hạn tốc độ người gửi (N).** Dùng lại cờ toàn cục `--throttleUpload` của croc (ví dụ
+  `500k`).
+  - Tách phần phân tích ở `src/croc/croc.go` (khoảng dòng 460–490) thành một hàm dùng chung,
+    điền `SendOptions.ThrottleBps`, và bỏ dòng trả lỗi trong `Send`.
+  - Trong hàm `emit` gọi `limiter.WaitN(ctx, len(chunk))` với
+    `rate.NewLimiter(rate.Limit(bps), 64*1024)`.
+- **Nhấn Enter để bắt đầu sớm (N).** Trong vòng phòng chờ của `sendSession`, đọc stdin ở một
+  goroutine. Enter khi đã có ít nhất 1 người `ready` thì thoát vòng; người chưa `ready` bị
+  `KICK`.
+- **Trang web cùng luồng**, tái sử dụng `web/` (chỉ khi còn dư hơn 3 ngày).
+
+## Could
+
+- Xoay `dataKey` theo file; người nhận gửi tiếp cho nhau; đường trực tiếp qua Tailcat.
+
+### Vòng bù / người vào muộn / thử lại (Could: chỉ khi còn thời gian; L, hub: D)
+
+Dời từ Must xuống Could ngày 22/11 để tập trung vào việc khác trước. Trước khi làm, phải chốt
+thêm các điểm thiết kế còn mở ở cuối mục này.
 
 **Việc:** người nhận rớt mạng vào lại bằng cùng code và chỉ nhận phần còn thiếu; người gửi chỉ
 thoát khi cả N xong.
@@ -578,34 +606,25 @@ thoát khi cả N xong.
 khác không bị gửi lại cả file; người gửi chỉ thoát khi cả N xong; số byte phát lại gần đúng với
 phần thiếu.
 
-## Should
+**Điểm thiết kế còn mở (ghi lại 22/11, chốt trước khi làm):**
+- **Phân biệt người quay lại với người mới:** hub không biết ai là ai (mỗi lần vào là một mã
+  thành viên mới). Đề xuất: người gửi đặt một `resumeToken` ngẫu nhiên trong `session` (đã mã
+  hóa) của từng người; người nhận lưu nó trong file `.state` và đưa ra sau PAKE khi vào lại.
+- **Người chưa từng ở trong phòng** mà vào khi có chỗ trống: cho vào (người vào muộn, phát lại cả
+  file) hay từ chối? Đề xuất: từ chối, trừ khi người gửi bật cờ cho phép; nếu không thì "chờ đủ
+  N người xong" không còn rõ là chờ ai.
+- **`--approve`:** người có `resumeToken` hợp lệ được tự duyệt, không hỏi lại. Hỏi người mới
+  giữa lúc đang truyền thì phải tạm dừng dòng tiến độ của giao diện terminal.
+- **`DATA` trước khi xong PAKE:** sau khi hub cho vào lại, người mới nhận `DATA` ngay. Bộ đệm chỉ
+  chứa khoảng nửa giây ở tốc độ đã đo; PAKE nhanh thì ổn (cùng `dataKey`, giải mã được sau),
+  nhưng chờ người bấm duyệt thì hàng đợi đầy và **mọi người** dừng tới 30 giây. Cần hub chỉ phát
+  `DATA` cho người đó sau khi người gửi gửi khung mới `ACTIVATE <memberID>`.
 
-- **Gửi thư mục (N/L).** `multisend.Send` hiện từ chối mọi thứ không phải file thường.
-  - Dùng `croc.GetFilesInfoContext(ctx, files, false, false, nil)`: nó trả `FileInfo` (dùng
-    `FolderSource`, `FolderRemote`, `Name`) và danh sách thư mục rỗng.
-  - Điền `FileEntry.Path` = đường dẫn tương đối dấu `/`, và `Session.EmptyDirs`.
-  - `StreamFiles` nhận đường dẫn đầy đủ theo đúng thứ tự `Idx`.
-  - Phía nhận đã hỗ trợ đường dẫn con và `EmptyDirs` qua `receivefs`.
-- **Giới hạn tốc độ người gửi (N).** Dùng lại cờ toàn cục `--throttleUpload` của croc (ví dụ
-  `500k`).
-  - Tách phần phân tích ở `src/croc/croc.go` (khoảng dòng 460–490) thành một hàm dùng chung,
-    điền `SendOptions.ThrottleBps`, và bỏ dòng trả lỗi trong `Send`.
-  - Trong hàm `emit` gọi `limiter.WaitN(ctx, len(chunk))` với
-    `rate.NewLimiter(rate.Limit(bps), 64*1024)`.
-- **Tự nhận dạng code multi (T).** Trong hành động mặc định của `croc CODE`, thử
-  `multisession.Dial` vai trò người nhận trước. Hub trả `no-sender` ngay nếu không có phòng multi
-  (một kết nối thừa, không chờ). Nếu vào được thì chạy `multirecv`, ngược lại chạy luồng 1-1 như
-  cũ.
-- **Nhấn Enter để bắt đầu sớm (N).** Trong vòng phòng chờ của `sendSession`, đọc stdin ở một
-  goroutine. Enter khi đã có ít nhất 1 người `ready` thì thoát vòng; người chưa `ready` bị
-  `KICK`.
-- **Trang web cùng luồng**, tái sử dụng `web/` (chỉ khi còn dư hơn 3 ngày).
 
-## Could
+## Không làm (quyết định 22/11)
 
-- `--password` trộn vào bí mật PAKE (chỉ có ích khi gửi qua kênh khác với code; `--code` đã đủ
-  cho nhu cầu này); xoay `dataKey` theo file; người nhận gửi tiếp cho nhau; đường trực tiếp
-  qua Tailcat.
+- Tự nhận dạng code multi trong `croc CODE`: người nhận luôn gõ `--multi`.
+- `--password` trộn vào bí mật PAKE: `--code` đã đủ (`plan.md` mục 1).
 
 ---
 
@@ -614,8 +633,8 @@ phần thiếu.
 | Tuần | D | T | N | L |
 |---|---|---|---|---|
 | 1 (**MVP**) | M0, M1a, M2, M4 (Azure) | M0, M1b, ghép M2 | M0, M1c, ghép M2 | M0, M1d, ghép M2, khung `multi-e2e-test.md` |
-| 2 | Sửa `--timeout`, tăng cứng hub | Review mật mã, giao diện terminal | Duyệt người vào, kéo thả | `--name`, vòng bù (nhận lệch thứ tự trước) |
-| 3 | Hub cho vào lại (vòng bù), sửa lỗi | Tự nhận dạng code, sửa lỗi, review cuối | Gửi thư mục, `--throttleUpload`, Enter để bắt đầu | Vòng bù (tiếp), chạy lại ma trận đầu-cuối, biểu đồ benchmark (`scripts/bench/azure.sh`) |
+| 2 | Sửa `--timeout`, tăng cứng hub | Review mật mã, giao diện terminal phía gửi | Duyệt người vào, kéo thả | `--name`, giao diện terminal phía nhận, `docs/multi-e2e-test.md` |
+| 3 | Sửa lỗi; vòng bù phía hub nếu còn thời gian (Could) | Sửa lỗi, review cuối | Gửi thư mục, `--throttleUpload`, Enter để bắt đầu | Vòng bù nếu còn thời gian (Could), chạy lại ma trận đầu-cuối, biểu đồ benchmark (`scripts/bench/azure.sh`) |
 
 **Cổng cuối tuần 1:** MVP chạy từ xa qua Azure (ma trận lượt 1–4 đạt). Chưa đạt thì tuần 2 chỉ
 sửa MVP, không bắt đầu Phase 2.
