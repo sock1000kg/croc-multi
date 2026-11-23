@@ -36,7 +36,7 @@ func multiSendFlags() []cli.Flag {
 		&cli.DurationFlag{
 			Name:  "timeout",
 			Value: 10 * time.Minute,
-			Usage: "session timeout waiting for receivers",
+			Usage: "max time to wait for receivers to be ready (0 = no limit)",
 		},
 	}
 }
