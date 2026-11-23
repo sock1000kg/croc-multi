@@ -20,9 +20,11 @@ package multihub
 import (
 	"encoding/binary"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
+	log "github.com/schollz/croc/v11/src/logger"
 	"github.com/schollz/croc/v11/src/multiwire"
 )
 
@@ -63,6 +65,9 @@ type member struct {
 }
 
 type room struct {
+	// Full room name ("multi:<hex>"); log only shortRoom(name).
+	name string
+
 	// The host
 	sender Conn
 
@@ -171,10 +176,12 @@ func (hub *Hub) Serve(roomName string, c Conn) error {
 	joinFrame, err := multiwire.Decode(raw)
 	// Every payload type needs at least 2 byte
 	if err != nil || joinFrame.Type != multiwire.TypeJoin || len(joinFrame.Payload) < 2 {
+		log.Debugf("multi room %s: join refused from %s: first frame is not a JOIN", shortRoom(roomName), c.RemoteAddr())
 		_ = c.Send(errorFrame(multiwire.ErrBadFrame, "expected JOIN frame"))
 		return errors.New("invalid initial frame")
 	}
 	if joinFrame.Payload[0] != multiwire.Version {
+		log.Debugf("multi room %s: join refused from %s: version %d", shortRoom(roomName), c.RemoteAddr(), joinFrame.Payload[0])
 		_ = c.Send(errorFrame(multiwire.ErrBadVersion, "version not supported"))
 		return errors.New("invalid frame version")
 	}
@@ -194,6 +201,7 @@ func (hub *Hub) Serve(roomName string, c Conn) error {
 		return hub.serveReceiver(roomName, c)
 
 	default:
+		log.Debugf("multi room %s: join refused from %s: unknown role %d", shortRoom(roomName), c.RemoteAddr(), role)
 		_ = c.Send(errorFrame(multiwire.ErrBadFrame, "unknown role"))
 		return errors.New("unknown role")
 	}
@@ -205,6 +213,7 @@ func (hub *Hub) Serve(roomName string, c Conn) error {
 // the room is deleted.
 func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 	hubRoom := &room{
+		name:         roomName,
 		sender:       c,
 		members:      make(map[uint16]*member),
 		nextID:       2,
@@ -215,16 +224,19 @@ func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 	hub.mu.Lock()
 	if _, exists := hub.rooms[roomName]; exists {
 		hub.mu.Unlock()
+		log.Debugf("multi room %s: join refused from %s: room already has a sender", shortRoom(roomName), c.RemoteAddr())
 		_ = c.Send(errorFrame(multiwire.ErrBadFrame, "room already has a sender"))
 		return errors.New("room already has a sender")
 	}
 	hub.rooms[roomName] = hubRoom
 	hub.mu.Unlock()
+	log.Infof("multi room %s created by %s (max %d receivers)", shortRoom(roomName), c.RemoteAddr(), maxReceivers)
 
 	// When sender leaves, notify all receivers and delete room
 	defer func() {
 		hub.mu.Lock()
 		delete(hub.rooms, roomName)
+		log.Infof("multi room %s closed (sender left, %d receivers still connected)", shortRoom(roomName), len(hubRoom.members))
 
 		// Copy current room localMembers to local slice
 		localMembers := make([]*member, 0, len(hubRoom.members))
@@ -282,6 +294,8 @@ func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 
 		f, err := multiwire.Decode(raw)
 		if err != nil {
+			log.Debugf("multi room %s: bad frame from sender (%d bytes), closing room", shortRoom(roomName), len(raw))
+			_ = c.Send(errorFrame(multiwire.ErrBadFrame, "invalid frame size"))
 			return err
 		}
 
@@ -313,6 +327,7 @@ func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 			}
 
 			id := binary.LittleEndian.Uint16(f.Payload[:2])
+			log.Debugf("multi room %s: sender kicked member %d", shortRoom(roomName), id)
 
 			hub.dropMember(hubRoom, id, multiwire.LeftQuit, false) // reason is unused when nofifySender = false
 
@@ -353,14 +368,17 @@ func (hub *Hub) serveReceiver(roomName string, c Conn) error {
 	switch {
 	case hubRoom == nil:
 		hub.mu.Unlock()
+		log.Debugf("multi room %s: join refused from %s: no-sender", shortRoom(roomName), c.RemoteAddr())
 		_ = c.Send(errorFrame(multiwire.ErrNoSender, "no sender in this room yet"))
 		return errors.New("no-sender")
 	case hubRoom.locked:
 		hub.mu.Unlock()
+		log.Debugf("multi room %s: join refused from %s: room-locked", shortRoom(roomName), c.RemoteAddr())
 		_ = c.Send(errorFrame(multiwire.ErrRoomLocked, "the transfer already started"))
 		return errors.New("room-locked")
 	case len(hubRoom.members) >= int(hubRoom.maxReceivers):
 		hub.mu.Unlock()
+		log.Debugf("multi room %s: join refused from %s: room-full", shortRoom(roomName), c.RemoteAddr())
 		_ = c.Send(errorFrame(multiwire.ErrRoomFull, "the sender's receiver count is reached"))
 		return errors.New("room-full")
 	}
@@ -374,6 +392,7 @@ func (hub *Hub) serveReceiver(roomName string, c Conn) error {
 	hubRoom.nextID++
 	hubRoom.members[m.id] = m
 	hub.mu.Unlock()
+	log.Debugf("multi room %s: member %d joined from %s", shortRoom(roomName), m.id, c.RemoteAddr())
 
 	// A delivered DATA frame proves the receiver is alive (see idleConn.touch).
 	// Only DATA counts: a dead peer's kernel buffer swallows tiny PINGs for a
@@ -452,8 +471,15 @@ func (hub *Hub) serveReceiver(roomName string, c Conn) error {
 		}
 		f, err := multiwire.Decode(raw)
 		if err != nil {
-			_ = hub.enqueue(m, errorFrame(multiwire.ErrBadFrame, "frame too short"))
-			continue
+			log.Debugf("multi room %s: bad frame from member %d (%d bytes), dropping it", shortRoom(roomName), m.id, len(raw))
+			_ = hub.enqueue(m, errorFrame(multiwire.ErrBadFrame, "invalid frame size"))
+
+			// We can't use dropMember here cus we want the receiver to receive their error reason first
+			// dropMember is used for cases where the receiver is cut (KICK, STALL)
+			// -> cant change its code to enqueue
+			_ = hub.enqueue(m, nil)
+			<-m.gone
+			hub.dropMember(hubRoom, m.id, multiwire.LeftNetwork, true)
 		}
 		switch f.Type {
 		case multiwire.TypeDirect:
@@ -517,6 +543,11 @@ func (hub *Hub) dropMember(r *room, id uint16, reason uint8, notifySender bool) 
 	}
 	delete(r.members, id)
 	hub.mu.Unlock()
+	if notifySender {
+		log.Debugf("multi room %s: member %d left (%s)", shortRoom(r.name), id, leftReasonName(reason))
+	} else {
+		log.Debugf("multi room %s: member %d left (kicked)", shortRoom(r.name), id)
+	}
 
 	m.conn.Close() // makes a blocked m.conn.Send fail, so the writer goroutine exits and closes m.gone
 
@@ -525,4 +556,27 @@ func (hub *Hub) dropMember(r *room, id uint16, reason uint8, notifySender bool) 
 	}
 	payload := binary.LittleEndian.AppendUint16(nil, m.id)
 	_ = r.sender.Send(encode(multiwire.Frame{Type: multiwire.TypeMemberLeft, To: multiwire.SenderID, Payload: append(payload, reason)}))
+}
+
+// leftReasonName names a MEMBER_LEFT reason for the log.
+func leftReasonName(reason uint8) string {
+	switch reason {
+	case multiwire.LeftQuit:
+		return "quit"
+	case multiwire.LeftSlow:
+		return "slow: stall timeout"
+	case multiwire.LeftNetwork:
+		return "network"
+	}
+	return "unknown"
+}
+
+// shortRoom prints only the first 8 hex chars of "multi:<sha256>", so the
+// relay log never holds the full room name.
+func shortRoom(name string) string {
+	name = strings.TrimPrefix(name, "multi:")
+	if len(name) > 8 {
+		name = name[:8]
+	}
+	return name
 }
