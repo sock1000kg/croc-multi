@@ -57,9 +57,10 @@ từng người vào** và **đuổi người bị từ chối** mới là thứ
 6. **Relay cũ/công cộng** coi `multi:` là phòng 2 người bình thường nên người gửi sẽ chờ mãi.
    Vì vậy client bắt buộc chờ `JOIN_ACK` từ hub trong 5 giây (`multisession.Dial`); nếu không có
    thì báo "relay này không hỗ trợ multi-send, hãy dùng `croc relay` của bạn". **Thực tế (đã
-   thử):** relay croc cũ trả lời ngay một gói không phải khung hub, nên client báo
-   `invalid multi frame size` thay cho câu trên (không treo, chỉ khó hiểu); sửa trong việc
-   "Tăng cứng hub" của D.
+   thử):** relay croc cũ trả lời ngay một gói không phải khung hub. **Đã sửa (23/11):**
+   `multisession.NewLink` coi gói không giải mã được hoặc `JOIN_ACK` sai là relay cũ
+   (`ErrNotMultiRelay`), nên người dùng thấy đúng câu trên thay cho `invalid multi frame size`.
+   Hay gặp nhất khi quên `--relay` (mặc định là relay công cộng của croc).
 7. **Chưa kiểm chứng:** tốc độ thật của một luồng TCP so với cách croc mở tới 8 kết nối dữ
    liệu. Mốc M3 đo việc này; nếu thiếu thì thêm "làn dữ liệu" (nhiều kết nối) ở Phase 2.
    **Đã đo (21/11, M3 trong `phan-cong.md`):** qua relay Azure, multi-send 1 người nhận đạt ~181
@@ -107,14 +108,19 @@ từng người vào** và **đuổi người bị từ chối** mới là thứ
   ngược của TCP), nên **người nhận chậm nhất quyết định tốc độ**: một người nhận không đọc
   làm **mọi người** dừng tới 30 giây. Hết 30 giây hub đóng kết nối người đó (không gửi
   `ERROR`, vì người không đọc cũng không nhận được) và báo người gửi `MEMBER_LEFT` lý do 1.
-- Hub chỉ đọc phần **header không mã hóa** của khung.
+- Hub chỉ đọc phần **header không mã hóa** của khung. Khung sai kích thước (< 6 byte hoặc
+  > 64 KB) bị trả `ERROR bad-frame` rồi đóng kết nối: người gửi thì đóng cả phòng, người nhận thì
+  bị loại (`MEMBER_LEFT` lý do 2).
+- Log: `Infof` khi tạo/đóng phòng (chỉ 8 ký tự hex đầu của tên phòng), `Debugf` cho vào/ra kèm
+  lý do, `KICK`, khung lỗi và lần vào bị từ chối (`croc --debug relay`). Không log nội dung.
 - Giữ kết nối: hub gửi `PING` mỗi 15 giây, client trả `PING`; kết nối im lặng 60 giây bị đóng.
   Phòng `multi:` **không** dùng TTL phòng của relay 1-1: phòng sống tới khi người gửi rời.
 - Cờ relay: `--multi-max-receivers` (mặc định 16), `--multi-queue-mb` (8),
   `--multi-stall-timeout` (30s), `--multi-join-rate` (120 lần/phút/IP). Khung ≤ 64 KB (kiểm
   tra trong `multiwire.Decode`). Không chặn theo IP (người cùng NAT phải vào được); chống làm
   phiền ở phía người gửi (`contracts.md` mục 3.5). Cờ `--max-rooms-open` của relay **không** đếm
-  phòng `multi:` (chưa có giới hạn số phòng multi, việc của D ở Phase 2).
+  phòng `multi:`, và **cố ý không** có giới hạn số phòng multi riêng (quyết định 23/11): chỉ
+  `--multi-join-rate` hãm việc mở phòng hàng loạt.
 - Người nhận không được gửi `DATA`; `DIRECT` của người nhận chỉ đi tới người gửi.
 
 ## 4. Cấu trúc thư mục (mỗi người một vùng)
@@ -180,7 +186,9 @@ croc [--relay IP:9009] [--out THƯ_MỤC] --multi CODE             # luôn cần
   sẵn; file trùng tên đã có thì người nhận từ chối trước khi tải.
 - `--code` tự đặt nên là ba từ (`apple-river-candle`); chuỗi kiểu `hello123` rơi về cách chia
   cũ theo ký tự và bí mật PAKE chỉ còn `23`. Bỏ `--code` để croc tự sinh.
-- `--approve` hiện báo "chưa hỗ trợ" (Phase 2). `--timeout` hiện cắt cả phiên, xem mục 11.
+- `--approve` hiện báo "chưa hỗ trợ" (Phase 2). `--timeout` chỉ giới hạn thời gian chờ ở
+  phòng chờ (tới khi đủ N người sẵn sàng; `0` = không giới hạn); tải lên và chờ `done` không có
+  hạn tổng.
 
 ## 7. Rủi ro và cách xử lý
 
@@ -224,13 +232,13 @@ Trạng thái chi tiết từng mốc và hướng dẫn làm từng việc nằ
 Lần chạy đầu: 1 người gửi (file zip 1,48 GB) → 2 người nhận qua relay Azure. Cả hai việc dưới
 đây đã được giao ở Phase 2 trong [`phan-cong.md`](phan-cong.md).
 
-1. **`--timeout` cắt cả phiên, không chỉ phòng chờ (lỗi, D sửa).** Cờ được mô tả là "thời gian chờ
+1. **✅ Đã sửa 23/11: `--timeout` cắt cả phiên, không chỉ phòng chờ.** Nay `--timeout` chỉ bao
+   phòng chờ; hết hạn thì báo `timed out waiting for receivers: k/N ready`. Mô tả lỗi cũ: Cờ được mô tả là "thời gian chờ
    người nhận" (mặc định 10 phút), nhưng `src/multisend/client.go` dùng `context.WithTimeout`
    bao quanh **toàn bộ** phiên: phòng chờ, tải lên và chờ `done`. Hết hạn giữa lúc tải lên thì
    kết nối bị đóng và người gửi chỉ báo
    `connection write failed: ... use of closed network connection`, không nói là hết giờ.
-   File lớn qua mạng nhà gần như chắc chắn vượt 10 phút. Tạm thời: `--timeout 3h` hoặc
-   `--timeout 0` (tắt).
+   File lớn qua mạng nhà gần như chắc chắn vượt 10 phút.
 2. **Không có giao diện trong terminal (thiếu tính năng; T làm phía gửi, L làm phía nhận).** Người gửi chỉ in code và một
    dòng "đã tải lên X byte" ở cuối: không biết ai đã vào, ai sẵn sàng, tiến độ hay tốc độ của
    từng người. Người nhận chỉ in `X / Y bytes`, không có % hay tốc độ. Phần ống dẫn đã có sẵn:
