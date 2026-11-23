@@ -58,10 +58,10 @@ M3 (đo tốc độ) đã đo ngày 21/11, xem mục M3.
 | M1b trao khóa | ✅ | L viết `multiwire` + `multisession` trong PR #12; kiểm chứng bằng `session_test.go` thay cho `tools/sessiondemo` (không viết). T vẫn cần review mật mã |
 | M1c gửi | ✅ | `multisend.Send`; chỉ file thường, chưa có thư mục/`--approve`/giới hạn tốc độ |
 | M1d nhận | ✅ | `multirecv.Receive`; `TestFullM1InMemory` là bài thử "M1 xong" |
-| M2 relay thật | ✅ | Thử tay một máy 18/11: 3 người nhận, `sha256` khớp, tải lên ≈ 1× file, 1-1 vẫn chạy. Relay cũ: báo lỗi ngay nhưng chưa đúng câu (xem "Tăng cứng hub") |
+| M2 relay thật | ✅ | Thử tay một máy 18/11: 3 người nhận, `sha256` khớp, tải lên ≈ 1× file, 1-1 vẫn chạy. Relay cũ: báo đúng "không hỗ trợ multi-send" (sửa 23/11, "Tăng cứng hub") |
 | M4 Azure | ✅ | Relay `138.91.38.64:9009` đang chạy (dựng lại 21/11 sau khi bản cũ `4.194.7.75` bị xóa) (triển khai lại sau mỗi lần sửa hub: `deploy/build.sh` + playbook) |
 | M3 đo tốc độ | ✅ | Đo 21/11 qua Azure (`scripts/bench/azure.sh`): multi-send 1 người nhận ≈ croc 1-1 (chênh ~4%); không cần làn dữ liệu. Số nhiều người nhận lấy từ ma trận MVP |
-| MVP từ xa | 🟡 | Lượt đầu 21/11: 1 gửi (1,48 GB) → 2 nhận; người gửi chết giữa chừng do lỗi `--timeout` (`plan.md` mục 11). Chạy lại ma trận với `--timeout 3h` |
+| MVP từ xa | 🟡 | Lượt đầu 21/11: 1 gửi (1,48 GB) → 2 nhận; người gửi chết giữa chừng do lỗi `--timeout` (`plan.md` mục 11, đã sửa 23/11). Chạy lại ma trận bằng bản mới |
 
 ## M0. Khóa hợp đồng (ngày 1, T dẫn dắt)
 
@@ -289,12 +289,12 @@ voice/chat để phối hợp lệnh, nhưng mỗi người chạy ở máy mìn
 
 ```
 export CROC_PASS=<mật khẩu relay>       # mọi người, một lần mỗi terminal
-croc --relay <ip>:9009 send --receivers 3 --timeout 3h big.bin
+croc --relay <ip>:9009 send --receivers 3 big.bin
 croc --relay <ip>:9009 --out ~/nhan --multi CODE
 ```
 
-Mọi người build từ cùng `main` (`git log --oneline -1` giống nhau). `--timeout 3h` là cách
-tránh lỗi `--timeout` cho tới khi D sửa. `iperf3 -c <ip> -t 5` (tải lên) và `-R` (tải xuống)
+Mọi người build từ cùng `main` (`git log --oneline -1` giống nhau). `--timeout` nay chỉ bao
+phòng chờ (sửa 23/11), nên file lớn không cần `--timeout 3h` nữa. `iperf3 -c <ip> -t 5` (tải lên) và `-R` (tải xuống)
 cần `iperf3` cài ở máy mình (`sudo apt install iperf3`); VM luôn chạy `iperf3` server.
 
 **Tiêu chí đạt cho mỗi lượt:**
@@ -499,20 +499,32 @@ cuối liệt kê đủ từng người; người nhận có thanh tiến độ 
 `scripts/bench/azure.sh` và một lần gửi tay với cùng file trên cùng máy; tốc độ TUI in ra lệch
 không quá ~10% so với script.
 
-### Tăng cứng hub (D)
+### Tăng cứng hub (D) — ✅ code xong 23/11
 
 **Đã xong:** `tools/faultinject` với `--mode stall|slow|silent`; cờ relay
 `--multi-max-receivers`, `--multi-queue-mb`, `--multi-stall-timeout`, `--multi-join-rate`; loại
 người nhận đứng im 30 giây có test.
 
-**Còn lại và cách làm:**
+**Xong 23/11:**
+- Khung sai kích thước: người gửi nhận `bad-frame` rồi phòng đóng; người nhận nhận `bad-frame`
+  rồi bị loại với `MEMBER_LEFT` lý do `LeftNetwork` (test `TestSenderBadSizeFrameGetsErrorAndClose`,
+  `TestReceiverBadSizeFrameGetsErrorAndIsDropped` trong `src/multihub/hub_test.go`).
+- Log trong `src/multihub` (mục 3 dưới đây).
+- Relay cũ: `multisession.ErrNotMultiRelay` (mục 4 dưới đây; vùng của T).
+- Giới hạn số phòng multi (mục 2): **không làm**, quyết định 23/11; chỉ dựa vào
+  `--multi-join-rate`.
+
+**Còn lại:** chạy các bài kiểm chứng bằng tay dưới đây trên relay thật và triển khai lại relay
+Azure (`deploy/build.sh` + playbook). Khung 1 MB thô cần thêm một chế độ cho `tools/faultinject`.
+
+**Cách làm (giữ để tham khảo):**
 1. **Khung quá 64 KB:** `comm` nhận được khung tới cỡ MB, còn `multiwire.Decode` mới là chỗ từ
    chối khung > 64 KB. Trong `src/multihub/hub.go`:
    - `serveSender`: khi `multiwire.Decode` lỗi thì gửi `errorFrame(ErrBadFrame, "frame too
      large")` rồi mới `return` (hiện tại đóng luôn, không báo).
    - `serveReceiver`: hiện gửi `bad-frame` rồi `continue`, tức giữ kết nối. Đổi thành: xếp lỗi
      vào hàng đợi, `dropMember(..., LeftNetwork, true)`, rồi `return`.
-2. **Giới hạn số phòng multi:** `--max-rooms-open` của relay không đếm phòng `multi:`, vì nhánh
+2. **~~Giới hạn số phòng multi~~ (không làm, 23/11):** `--max-rooms-open` của relay không đếm phòng `multi:`, vì nhánh
    `multi:` trong `clientCommunication` (`src/tcp/tcp.go`) chạy trước `admitToRoom`.
    - Thêm `MaxRooms int` vào `multihub.Config`. Trong `serveSender`, dưới `hub.mu`, nếu
      `len(hub.rooms) >= MaxRooms` thì từ chối bằng mã lỗi mới `ErrTooManyRooms = 8` (thêm vào
@@ -532,11 +544,15 @@ người nhận đứng im 30 giây có test.
 **Kiểm chứng:**
 - Một người nhận không bao giờ đọc: bị loại trong 30 giây, các máy khác không bị ảnh hưởng.
 - Gửi khung 1 MB thô vào cổng: relay báo `bad-frame`, đóng kết nối, không sập.
-- Mở quá `--multi-max-rooms` phòng: phòng mới bị từ chối với thông báo rõ.
 - `croc --debug relay`: thấy log vào/ra.
 - `--relay` trỏ vào relay croc cũ: thông báo "không hỗ trợ multi-send".
 
-### Sửa `--timeout` của người gửi (D)
+### Sửa `--timeout` của người gửi (D) — ✅ xong 23/11
+
+Đã làm đúng như dưới đây. Test: `TestLobbyTimeout` (phòng chờ trống, `Timeout: 200ms`, báo
+`timed out waiting for receivers: 0/1 ready`) và `TestTimeoutDoesNotCutTransfer` (truyền kéo dài
+quá `Timeout` vẫn xong) trong `src/multisend/m1_integration_test.go`. Còn kiểm chứng bằng tay qua
+Azure với file lớn.
 
 Lỗi phát hiện khi chạy thử qua Azure (`plan.md` mục 11): `--timeout` (mặc định 10 phút) cắt cả
 phiên đang tải lên, và người gửi chỉ báo `use of closed network connection`.

@@ -53,11 +53,6 @@ func Send(ctx context.Context, opts SendOptions) error {
 	if opts.ThrottleBps != 0 {
 		return errors.New("multi throttling is not yet supported")
 	}
-	if opts.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
-		defer cancel()
-	}
 	code := opts.Code
 	var err error
 	if code == "" {
@@ -140,8 +135,19 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 	}()
 	ready := map[uint16]bool{}   // authenticated and said "ready"
 	pending := map[uint16]bool{} // joined, PAKE in progress
+
 	// Phase 1: lobby. The hub enforces the receiver cap (room-full), so at
 	// most opts.Receivers can be here at once.
+
+	//This lobby session ends when the timeout waiting for receivers end
+	var lobby context.Context
+	lobby = ctx
+	if opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		lobby, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+	}
+
 	for len(ready) < opts.Receivers {
 		select {
 		case f := <-events:
@@ -195,8 +201,12 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 			}
 		case e := <-eventErr:
 			return e
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-lobby.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+
+			return fmt.Errorf("Timed out waiting for receivers: %d/%d ready", len(ready), opts.Receivers)
 		}
 	}
 	// Phase 2: one watcher per ready receiver. Each ends with exactly one

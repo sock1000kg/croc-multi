@@ -469,3 +469,74 @@ func TestReceiverTakingDataIsNotIdle(t *testing.T) {
 	default:
 	}
 }
+
+// A frame whose size multiwire.Decode rejects (over 64 KB, or shorter than
+// the 6-byte header) is answered with ERROR bad-frame, then the connection is
+// closed. src/comm itself accepts frames of several MB, so the hub is the
+// only place that enforces the limit.
+func TestSenderBadSizeFrameGetsErrorAndClose(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+	}{
+		{"too large", make([]byte, 1<<20)},
+		{"too short", []byte{tData, 0, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := multihub.New(defaultConfig())
+			room := roomName(t)
+			sender := joinSender(t, h, room, 2)
+			r, _ := joinReceiver(t, h, room)
+			sender.expect(tMemberJoined)
+
+			if err := sender.conn.Send(tc.raw); err != nil {
+				t.Fatal(err)
+			}
+			sender.expectError(errBadFrame)
+			sender.expectClosed()
+
+			// The room ends with its sender.
+			r.expectError(errSenderGone)
+			r.expectClosed()
+		})
+	}
+}
+
+func TestReceiverBadSizeFrameGetsErrorAndIsDropped(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+	}{
+		{"too large", make([]byte, 1<<20)},
+		{"too short", []byte{tDirect, 0, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := multihub.New(defaultConfig())
+			room := roomName(t)
+			sender := joinSender(t, h, room, 2)
+			bad, badID := joinReceiver(t, h, room)
+			sender.expect(tMemberJoined)
+			good, _ := joinReceiver(t, h, room)
+			sender.expect(tMemberJoined)
+
+			if err := bad.conn.Send(tc.raw); err != nil {
+				t.Fatal(err)
+			}
+			bad.expectError(errBadFrame)
+			bad.expectClosed()
+
+			// MEMBER_LEFT payload: memberID u16 | reason u8.
+			left := sender.expect(tMemberLeft)
+			if len(left.payload) < 3 || binary.LittleEndian.Uint16(left.payload) != badID {
+				t.Fatalf("MEMBER_LEFT %x, want member %d", left.payload, badID)
+			}
+			if left.payload[2] != multiwire.LeftNetwork {
+				t.Fatalf("MEMBER_LEFT reason %d, want LeftNetwork (%d)", left.payload[2], multiwire.LeftNetwork)
+			}
+
+			// The other receiver is unaffected.
+			sender.send(frame{typ: tData, payload: []byte("x")})
+			good.expect(tData)
+		})
+	}
+}

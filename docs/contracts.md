@@ -17,9 +17,10 @@ Những chỗ ghi **(T xác nhận)** là quyết định chi tiết T chốt tr
   relayAddr, relayPass, room)`.
 - **Tên phòng** gửi cho relay: `"multi:" + codephrase.Parse(code).RoomName`. Tiền tố `multi:`
   báo cho relay giao kết nối cho hub thay vì ghép cặp 2 người.
-- Sau bắt tay, client gửi khung `JOIN` và **phải nhận `JOIN_ACK` trong 5 giây**; nếu không
-  (relay cũ không hiểu `multi:`) thì báo: `relay này không hỗ trợ multi-send; dùng croc relay
-  của bạn`.
+- Sau bắt tay, client gửi khung `JOIN` và **phải nhận `JOIN_ACK` trong 5 giây**; nếu không,
+  hoặc nếu câu trả lời không giải mã được thành khung hub hay không phải `JOIN_ACK` hợp lệ
+  (relay cũ không hiểu `multi:`), thì báo: `relay này không hỗ trợ multi-send; dùng croc relay
+  của bạn` (`multisession.ErrNotMultiRelay`).
 - Phiên bản giao thức: **1**, nằm trong `JOIN`.
 
 ## 2. Khung hub (`src/multiwire`)
@@ -64,6 +65,9 @@ type u8 | flags u8 | from u16 | to u16 | payload
 ### 2.3 Quy tắc của hub
 
 - Chỉ người gửi được gửi `DATA`. Người nhận gửi `DATA` thì hub trả `bad-frame`.
+- **Khung sai kích thước** (< 6 byte hoặc > 64 KB): hub trả `bad-frame` rồi đóng kết nối. Với
+  người gửi thì phòng đóng (`sender-gone` cho mọi người nhận); với người nhận thì người đó bị loại
+  và người gửi nhận `MEMBER_LEFT` lý do 2 (`LeftNetwork`).
 - `DIRECT` từ người nhận chỉ tới người gửi; `DIRECT` từ người gửi tới đúng một người nhận.
   Người nhận **không** gửi được cho người nhận khác.
 - **Người nhận vào trước khi có người gửi:** hub trả `no-sender`; client thử lại mỗi 5 giây
@@ -78,6 +82,7 @@ type u8 | flags u8 | from u16 | to u16 | payload
   người đó cố giữ máy. Chỉ `reject` thôi là chưa đủ vì nó chỉ là một thông điệp.
 - Hub không tự khóa theo số người: chỗ trống do người bị `KICK` hoặc tự rời được nhả lại.
 - Hết `--timeout` mà chưa bắt đầu thì người gửi thoát, hub đóng phòng (`sender-gone`).
+  `--timeout` chỉ bao phòng chờ; khi đã bắt đầu truyền thì không còn hạn tổng.
 - **Áp lực ngược:** mỗi người nhận có hàng đợi gửi ra khoảng **8 MB**, tính theo số khung
   (`QueueBytes / 32 KB`, tức 256 khung với 8 MB, vì mỗi khung `DATA` ≈ 32 KB). Khi bất kỳ
   hàng đợi nào đầy, hub ngừng đọc từ người gửi. Hàng đợi của một người nhận **đầy liên tục
@@ -290,7 +295,11 @@ Phía relay, `*comm.Comm` được bọc thành `Conn` ở `src/tcp/multi_room.g
 ### 5.3 `src/multisession` (T)
 
 ```go
-// Dial kết nối relay, gửi JOIN, chờ JOIN_ACK (5 giây).
+// ErrNotMultiRelay: relay trả lời JOIN bằng thứ không phải khung hub, hoặc không trả lời
+// trong 5 giây: đó là relay croc thường, không có multi-send.
+var ErrNotMultiRelay = errors.New("relay này không hỗ trợ multi-send; dùng croc relay của bạn")
+
+// Dial kết nối relay, gửi JOIN, chờ JOIN_ACK (5 giây). Relay cũ → lỗi mang câu của ErrNotMultiRelay.
 func Dial(ctx context.Context, relayAddr, relayPass, code string,
     role multiwire.Role, maxReceivers int) (*Link, error)
 
@@ -370,6 +379,8 @@ croc --multi [--relay IP:9009] [--pass RELAYPASS] [--out THƯ_MỤC] CODE
 ```
 
 - `--receivers N` (người gửi) vừa bật chế độ multi vừa là số người nhận cần duyệt; người thứ N+1 bị `reject`/`KICK`.
+- `--timeout` (người gửi): thời gian tối đa chờ đủ N người sẵn sàng; `0` = không giới hạn.
+  Không giới hạn thời gian tải lên.
 - `--name TÊN` (người nhận): nhãn hiển thị cho người gửi, mặc định là hostname.
 - `--multi` (người nhận) là cờ bắt buộc; không làm tự nhận dạng code multi.
 - **Mã thoát:** 0 = mọi người nhận xong; 1 = có người nhận lỗi/bị loại/bị từ chối (liệt kê

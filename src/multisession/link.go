@@ -209,14 +209,14 @@ func NewLink(ctx context.Context, c multiwire.Conn, role multiwire.Role, maxRece
 	}
 	f, e := multiwire.Decode(b)
 	if e != nil {
-		return nil, e
+		return nil, ErrNotMultiRelay
 	}
 	if f.Type == multiwire.TypeError {
 		return nil, multiwire.ParseError(f.Payload)
 	}
 	// JOIN_ACK payload: version u8 | memberID u16 | maxReceivers u8
 	if f.Type != multiwire.TypeJoinAck || len(f.Payload) != 4 || f.Payload[0] != multiwire.Version {
-		return nil, errors.New("invalid JOIN_ACK")
+		return nil, ErrNotMultiRelay
 	}
 	// The hub lowers a sender's request to its own --multi-max-receivers;
 	// fail now rather than wait forever for receivers that cannot get in.
@@ -233,6 +233,10 @@ func NewLink(ctx context.Context, c multiwire.Conn, role multiwire.Role, maxRece
 	go l.readLoop()
 	return l, nil
 }
+
+// ErrNotMultiRelay means the relay answered JOIN with something that is not a
+// hub frame (or not at all): it is a plain croc relay without multi-send.
+var ErrNotMultiRelay = errors.New("relay này không hỗ trợ multi-send; dùng croc relay của bạn")
 
 // Dial connects to the relay at addr, enters room "multi:<RoomName of code>"
 // and JOINs with the given role. It is the real-network counterpart of
@@ -253,7 +257,7 @@ func Dial(ctx context.Context, addr, pass, code string, role multiwire.Role, max
 	l, e := NewLink(deadline, multiwire.FromComm(c), role, maxReceivers)
 	if e != nil {
 		c.Close()
-		if errors.Is(e, context.DeadlineExceeded) {
+		if errors.Is(e, context.DeadlineExceeded) || errors.Is(e, ErrNotMultiRelay) {
 			return nil, errors.New("relay này không hỗ trợ multi-send; dùng croc relay của bạn")
 		}
 		return nil, e
