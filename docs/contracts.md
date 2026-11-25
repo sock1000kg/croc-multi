@@ -315,8 +315,9 @@ type ReceiverInfo struct{ ID uint16; Addr string; Name string } // Name đã là
 func AuthorizeReceiver(ctx context.Context, l *Link, code string, id uint16,
     session Session, approve func(ReceiverInfo) bool) error
 
-// Phía người nhận: PAKE, nhận và kiểm tra session.
-func JoinSession(ctx context.Context, l *Link, code string) (Session, error)
+// Phía người nhận: PAKE, nhận và kiểm tra session. name hiện cho người gửi
+// (chưa xác thực); trống thì dùng hostname.
+func JoinSession(ctx context.Context, l *Link, code, name string) (Session, error)
 
 type Session struct {
     DataKey   []byte
@@ -361,9 +362,14 @@ type ReceiveOptions struct {
     OutDir    string
     Relay     string
     RelayPass string
-    Progress  func(bytes, total int64)
+    Name      string                   // --name; trống thì hostname
+    Progress  func(bytes, total int64) // sau mỗi khối đã ghi
+    Status    func(msg string)         // từng dòng trạng thái, kể cả dòng "bench:"
+    Joined    func(Session)            // đã có manifest, trước DATA đầu tiên
 }
 func Receive(ctx context.Context, opts ReceiveOptions) error
+func ReceiveStream(ctx context.Context, stream Stream, outDir string,
+    session Session, progress func(int64, int64)) error
 ```
 
 `Send` trả lỗi `nil` chỉ khi **cả N người nhận đều `done`**; nếu một số người lỗi thì trả lỗi
@@ -375,7 +381,7 @@ liệt kê họ (mã thoát CLI 1, mục 6).
 croc relay                                        # relay/hub, có sẵn, thêm hỗ trợ multi:
 croc send --receivers N [--approve] [--timeout 10m] [--relay IP:9009] [--pass RELAYPASS]
           [--code CỤM_TỪ] FILE...                 # N ≥ 1 bật chế độ multi-send
-croc --multi [--relay IP:9009] [--pass RELAYPASS] [--out THƯ_MỤC] CODE
+croc --multi [--relay IP:9009] [--pass RELAYPASS] [--out THƯ_MỤC] [--name TÊN] CODE
 ```
 
 - `--receivers N` (người gửi) vừa bật chế độ multi vừa là số người nhận cần duyệt; người thứ N+1 bị `reject`/`KICK`.

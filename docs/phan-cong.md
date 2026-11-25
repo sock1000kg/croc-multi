@@ -266,8 +266,8 @@ byte người gửi tải lên; chạy kèm một lần `croc` 1-1 cùng file, c
 
 **Kiểm chứng ban đầu:** chạy script, dán bảng kết quả vào `docs/multi-e2e-test.md`. Đối chiếu
 với mục 8 của `plan.md`. Nếu 1 người nhận chậm hơn mục tiêu, mở việc "làn dữ liệu" (Phase 2
-Must). Thực tế: kết quả nằm ở trên; `docs/multi-e2e-test.md` vẫn chưa có (L tạo khi chạy ma
-trận MVP, chép bảng này vào).
+Must). Thực tế: kết quả nằm ở trên, đã chép vào `docs/multi-e2e-test.md` (khung có từ 25/11;
+bảng ma trận MVP điền khi chạy).
 
 ## Mốc MVP: bài thử đầu-cuối từ xa (cả nhóm, ngày 7)
 
@@ -354,7 +354,7 @@ xác nhận, từ chối thì nó tự gửi `reject` "refused"; `sendSession` �
    hỏi; có thì trả `false` ngay, không hỏi.
 6. Đủ N người đã duyệt thì tự trả `false`. Hub đã chặn người thứ N+1 khi N người còn trong
    phòng, nên trường hợp này chỉ xảy ra khi có người đã duyệt rồi rời đi.
-7. `--name` (L): thêm `&cli.StringFlag{Name: "name"}` trong `registerMultiRecv`
+7. ✅ (25/11) `--name` (L): thêm `&cli.StringFlag{Name: "name"}` trong `registerMultiRecv`
    (`src/cli/multi.go`, cạnh cờ `--multi`), thêm `Name` vào `multirecv.ReceiveOptions`, và thêm
    tham số `name` cho `multisession.JoinSession` (hiện dùng `os.Hostname()` trong
    `session.go`); trống thì vẫn dùng hostname. Sửa 2 chỗ gọi trong test.
@@ -478,7 +478,10 @@ gắn `Progress` nên người gửi không in gì; chưa có trạng thái `joi
    `Send` cần trả `sent` ra ngoài: thêm trường `Uploaded int64` vào một kiểu kết quả, hoặc báo
    qua `PeerProgress{State: "uploaded", Bytes: sent}` trước khi trả về.
 
-**Cách làm, người nhận (L)** (`src/cli/multi.go` + `src/multirecv/client.go`):
+**Cách làm, người nhận (L)** (`src/cli/multi.go` + `src/multirecv/client.go`) — ✅ code xong 25/11.
+Thêm `Joined func(Session)` vào `ReceiveOptions` để thanh tiến độ có tên file; không phải terminal
+thì in một dòng tiến độ mỗi 5 giây thay cho thanh. Đã thử qua relay `localhost` (2 người nhận,
+stderr ghi ra file); còn kiểm chứng trên Azure:
 1. Thêm `Status func(msg string)` vào `multirecv.ReceiveOptions` (sửa `contracts.md` mục 5.4).
    `Receive` gọi nó khi chờ `no-sender` ("Đang chờ người gửi..."), sau `JoinSession` ("Đã vào
    phòng, chờ người gửi bắt đầu") và khi xong ("Đã lưu: <đường dẫn tuyệt đối>" cho từng file,

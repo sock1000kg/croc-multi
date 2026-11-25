@@ -67,7 +67,7 @@ func TestFullM1InMemory(t *testing.T) {
 		out := t.TempDir()
 		outputs = append(outputs, filepath.Join(out, "file"))
 		go func() {
-			s, e := multisession.JoinSession(ctx, l, "room-correct-words")
+			s, e := multisession.JoinSession(ctx, l, "room-correct-words", "")
 			if e != nil {
 				results <- e
 				return
@@ -165,7 +165,7 @@ func TestTimeoutDoesNotCutTransfer(t *testing.T) {
 
 	l := connect(multiwire.RoleReceiver)
 	out := t.TempDir()
-	s, e := multisession.JoinSession(ctx, l, "room-correct-words")
+	s, e := multisession.JoinSession(ctx, l, "room-correct-words", "")
 	if e != nil {
 		t.Fatal(e)
 	}

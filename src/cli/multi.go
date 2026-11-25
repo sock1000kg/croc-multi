@@ -3,12 +3,16 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/schollz/croc/v11/internal/cli"
 	"github.com/schollz/croc/v11/src/multirecv"
 	"github.com/schollz/croc/v11/src/multisend"
+	"github.com/schollz/croc/v11/src/termui"
+	"github.com/schollz/progressbar/v3"
 )
 
 // registerMulti là hàm cầu nối duy nhất được gọi từ newApp() trong src/cli/cli.go.
@@ -93,6 +97,9 @@ func registerMultiRecv(app *cli.App) {
 	app.Flags = append(app.Flags, &cli.BoolFlag{
 		Name:  "multi",
 		Usage: "receive files in multi-client mode",
+	}, &cli.StringFlag{
+		Name:  "name",
+		Usage: "name shown to the sender in multi-client mode (default: hostname)",
 	})
 
 	origAction := app.Action
@@ -115,7 +122,83 @@ func receiveMulti(c *cli.Context) error {
 	if c.NArg() != 1 {
 		return errors.New("cần chỉ định một code để nhận multi-send")
 	}
-	err := multirecv.Receive(c.Context, multirecv.ReceiveOptions{Code: c.Args().First(), OutDir: c.String("out"), Relay: c.String("relay"), RelayPass: c.String("pass"), Progress: func(bytes, total int64) { fmt.Fprintf(os.Stderr, "\r%d / %d bytes", bytes, total) }})
-	fmt.Fprintln(os.Stderr)
+	ui := newRecvUI()
+	err := multirecv.Receive(c.Context, multirecv.ReceiveOptions{
+		Code: c.Args().First(), OutDir: c.String("out"), Relay: c.String("relay"), RelayPass: c.String("pass"),
+		Name: c.String("name"), Progress: ui.progress, Status: ui.status, Joined: ui.joined,
+	})
+	ui.endLine()
 	return err
+}
+
+// recvUI draws the receiver's output on stderr: status lines, and a progress
+// bar on a terminal or a plain line every 5 s otherwise (no "\r" in logs).
+// multirecv.Receive calls it from one goroutine only.
+type recvUI struct {
+	w           io.Writer
+	tty, color  bool
+	description string
+	bar         *progressbar.ProgressBar
+	lineOpen    bool // the bar is on the current line, not yet ended by a newline
+	lastPlain   time.Time
+}
+
+func newRecvUI() *recvUI {
+	w, color := termui.Output(os.Stderr)
+	return &recvUI{w: w, tty: isTerminal(os.Stderr), color: color}
+}
+
+// isTerminal reports whether f is a terminal (the same check as
+// termui.Output, which only reports colour: NO_COLOR also turns that off).
+func isTerminal(f *os.File) bool {
+	return isatty.IsTerminal(f.Fd()) || isatty.IsCygwinTerminal(f.Fd())
+}
+
+func (u *recvUI) joined(s multirecv.Session) {
+	if len(s.Files) == 1 {
+		u.description = s.Files[0].Path
+	} else {
+		u.description = fmt.Sprintf("%d files", len(s.Files))
+	}
+}
+
+func (u *recvUI) progress(bytes, total int64) {
+	if !u.tty {
+		if now := time.Now(); now.Sub(u.lastPlain) >= 5*time.Second || bytes == total {
+			u.lastPlain = now
+			pct := 100.0
+			if total > 0 {
+				pct = float64(bytes) * 100 / float64(total)
+			}
+			fmt.Fprintf(u.w, "%s: %.0f%% (%d / %d bytes)\n", u.description, pct, bytes, total)
+		}
+		return
+	}
+	if u.bar == nil {
+		u.bar = termui.NewProgress(termui.ProgressConfig{
+			Max:          total,
+			Description:  termui.ProgressDescription("", u.description, u.color),
+			Writer:       u.w,
+			ColorEnabled: u.color,
+			Throttle:     100 * time.Millisecond,
+		})
+	}
+	u.lineOpen = true
+	_ = u.bar.Set64(bytes)
+	if bytes >= total {
+		_ = u.bar.Finish()
+	}
+}
+
+// status prints one line, ending the progress bar's line first.
+func (u *recvUI) status(msg string) {
+	u.endLine()
+	fmt.Fprintln(u.w, msg)
+}
+
+func (u *recvUI) endLine() {
+	if u.lineOpen {
+		fmt.Fprintln(u.w)
+		u.lineOpen = false
+	}
 }
