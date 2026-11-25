@@ -28,13 +28,34 @@ type controlMessage struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// Stats is the timing of one received session (phan-cong.md, "Định dạng
+// chung"): the clock starts at the first DATA frame and stops once all-end
+// has been accepted (every hash matched), just before "done" is sent. The
+// lobby is not counted. On failure it stops at the error.
+type Stats struct {
+	Bytes   int64         // plaintext file bytes written
+	Elapsed time.Duration // 0 if no DATA arrived
+}
+
 // ReceiveStream receives an already authenticated session. The stream adapter
 // must direct control messages to the sender and unblock on context cancellation.
 //
 // Order: New (validate manifest) → send "ready" → Accept every DATA payload
 // until all-end → send "done". Any error sends "fail" (best effort) and is
 // returned; Receiver.Close then deletes unfinished temp files.
-func ReceiveStream(ctx context.Context, stream Stream, outDir string, session Session, progress func(int64, int64)) (result error) {
+func ReceiveStream(ctx context.Context, stream Stream, outDir string, session Session, progress func(int64, int64)) error {
+	_, err := receiveStream(ctx, stream, outDir, session, progress)
+	return err
+}
+
+// receiveStream is ReceiveStream that also reports the timing.
+func receiveStream(ctx context.Context, stream Stream, outDir string, session Session, progress func(int64, int64)) (stats Stats, result error) {
+	var started time.Time
+	stop := func() {
+		if !started.IsZero() && stats.Elapsed == 0 {
+			stats.Elapsed = time.Since(started)
+		}
+	}
 	send := func(message controlMessage) error {
 		payload, err := json.Marshal(message)
 		if err != nil {
@@ -45,20 +66,27 @@ func ReceiveStream(ctx context.Context, stream Stream, outDir string, session Se
 	receiver, err := New(outDir, session, progress)
 	if err != nil {
 		_ = send(controlMessage{Type: "fail", Reason: "write-error"})
-		return err
+		return stats, err
 	}
-	defer func() { result = errors.Join(result, receiver.Close()) }()
+	defer func() {
+		stop()
+		stats.Bytes = receiver.received
+		result = errors.Join(result, receiver.Close())
+	}()
 	if err = send(controlMessage{Type: "ready"}); err != nil {
-		return fmt.Errorf("send ready: %w", err)
+		return stats, fmt.Errorf("send ready: %w", err)
 	}
 	lastProgress := time.Time{}
 	for {
 		if err = ctx.Err(); err != nil {
-			return err
+			return stats, err
 		}
 		payload, err := stream.ReceiveData(ctx)
 		if err != nil {
-			return fmt.Errorf("receive data: %w", err)
+			return stats, fmt.Errorf("receive data: %w", err)
+		}
+		if started.IsZero() {
+			started = time.Now()
 		}
 		before := receiver.received
 		done, err := receiver.Accept(payload)
@@ -68,14 +96,15 @@ func ReceiveStream(ctx context.Context, stream Stream, outDir string, session Se
 				reason = "hash-mismatch"
 			}
 			_ = send(controlMessage{Type: "fail", Reason: reason})
-			return err
+			return stats, err
 		}
 		if done {
+			stop()
 			ok := true
 			if err = send(controlMessage{Type: "done", OK: &ok, Bytes: &receiver.received}); err != nil {
-				return fmt.Errorf("send done: %w", err)
+				return stats, fmt.Errorf("send done: %w", err)
 			}
-			return nil
+			return stats, nil
 		}
 		if receiver.received != before && time.Since(lastProgress) >= 500*time.Millisecond {
 			files := 0
@@ -85,7 +114,7 @@ func ReceiveStream(ctx context.Context, stream Stream, outDir string, session Se
 				}
 			}
 			if err = send(controlMessage{Type: "progress", Files: &files, Bytes: &receiver.received}); err != nil {
-				return fmt.Errorf("send progress: %w", err)
+				return stats, fmt.Errorf("send progress: %w", err)
 			}
 			lastProgress = time.Now()
 		}

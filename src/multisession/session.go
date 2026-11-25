@@ -184,7 +184,8 @@ func AuthorizeReceiver(ctx context.Context, l *Link, code string, id uint16, ses
 
 // JoinSession is the receiver's side: run PAKE with the sender over l and
 // return the decrypted Session. A wrong code fails here, before any DATA.
-func JoinSession(ctx context.Context, l *Link, code string) (Session, error) {
+// name is shown to the sender (unauthenticated); "" means the hostname.
+func JoinSession(ctx context.Context, l *Link, code, name string) (Session, error) {
 	var session Session
 	pass, room, e := roomKey(code, l.id)
 	if e != nil {
@@ -196,7 +197,9 @@ func JoinSession(ctx context.Context, l *Link, code string) (Session, error) {
 		return session, e
 	}
 	initial := p.Bytes()
-	name, _ := os.Hostname()
+	if name == "" {
+		name, _ = os.Hostname()
+	}
 	if e = sendMessage(l, multiwire.SenderID, message{Type: "pake1", Version: pakekey.ProtocolVersion, Curve: "p256", Bytes: initial, Name: name}); e != nil {
 		return session, e
 	}

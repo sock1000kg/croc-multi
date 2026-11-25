@@ -39,12 +39,19 @@ func TestSessionAuthentication(t *testing.T) {
 		}
 		id := binary.LittleEndian.Uint16(joined.Payload)
 		sent := make(chan error, 1)
-		go func() { sent <- multisession.AuthorizeReceiver(ctx, sender, "room-correct-words", id, session, nil) }()
-		got, e := multisession.JoinSession(ctx, r, test.code)
+		var seen string
+		approve := func(info multisession.ReceiverInfo) bool { seen = info.Name; return true }
+		go func() {
+			sent <- multisession.AuthorizeReceiver(ctx, sender, "room-correct-words", id, session, approve)
+		}()
+		got, e := multisession.JoinSession(ctx, r, test.code, "an-pc")
 		sendErr := <-sent
 		if test.good {
 			if e != nil || sendErr != nil || !bytes.Equal(got.DataKey, session.DataKey) {
 				t.Fatalf("good: %v %v", e, sendErr)
+			}
+			if seen != "an-pc" {
+				t.Fatalf("sender saw name %q", seen)
 			}
 		} else if e == nil || sendErr == nil {
 			t.Fatalf("wrong code accepted: %v %v", e, sendErr)
