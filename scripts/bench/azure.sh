@@ -23,9 +23,9 @@ for run in 1 2; do
   echo "1-1 run $run:      $(res $T0 $T1) ok=$([ "$(sha256sum o11/f.bin | cut -c1-12)" = "$SRC" ] && echo y || echo NO)"
   for N in "${NS[@]}"; do
     C=bench-multi-$N-$run-$RANDOM
-    timeout 900 "$B" --relay "$R" send --receivers "$N" --timeout 0 --code "$C" f.bin > sm.log 2>&1 & SP=$!
+    CROC_SECRET=$C timeout 900 "$B" --relay "$R" send --receivers "$N" --timeout 0 f.bin > sm.log 2>&1 & SP=$!
     sleep 2; T0=$(t); P=()
-    for i in $(seq "$N"); do mkdir -p "o$N-$i"; (cd "o$N-$i" && timeout 900 "$B" --relay "$R" --multi "$C" >/dev/null 2>&1) & P+=($!); done
+    for i in $(seq "$N"); do mkdir -p "o$N-$i"; (cd "o$N-$i" && CROC_SECRET=$C timeout 900 "$B" --relay "$R" --multi >/dev/null 2>&1) & P+=($!); done
     for p in "${P[@]}"; do wait "$p"; done; T1=$(t); wait $SP
     ok=$(sha256sum o"$N"-*/f.bin | cut -c1-12 | sort -u)
     echo "multi N=$N run $run:  $(res $T0 $T1) $(grep -o 'uploaded [0-9]*' sm.log) ok=$([ "$ok" = "$SRC" ] && echo y || echo NO)"
