@@ -42,3 +42,5 @@ tmp/
 !/src/webassets/dist/.gitkeep
 croc2
 dist/
+
+.relayer
