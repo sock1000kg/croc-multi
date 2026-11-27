@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -43,7 +42,9 @@ type controlMessage struct {
 // reported "done".
 func Send(ctx context.Context, opts SendOptions) error {
 	// 255: the receiver count travels as one byte in JOIN.
-	if opts.Receivers < 1 || opts.Receivers > 255 || len(opts.Files) == 0 || len(opts.Files) > 65536 {
+	// The file count limit is checked in buildManifest, after folders are
+	// expanded.
+	if opts.Receivers < 1 || opts.Receivers > 255 || len(opts.Files) == 0 {
 		return errors.New("invalid files or receiver count")
 	}
 
@@ -65,20 +66,18 @@ func Send(ctx context.Context, opts SendOptions) error {
 	if _, err = rand.Read(session.DataKey); err != nil {
 		return err
 	}
-	// The manifest: Idx is the fileIdx StreamFiles puts in each record, so it
-	// must be the position in opts.Files. Only regular files for now (no
-	// folders); the receiver sees base names only.
-	for i, name := range opts.Files {
-		info, e := os.Stat(name)
-		if e != nil {
-			return e
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("not a regular file: %s", name)
-		}
-		session.Files = append(session.Files, multisession.FileEntry{Idx: i, Path: filepath.Base(name), Size: info.Size()})
-		session.TotalSize += info.Size()
+	// The manifest (manifest.go): files and folders expanded into relative
+	// paths like "photos/2024/a.jpg", plus the empty folders to create.
+	// Built before connecting, so a bad path fails without touching the relay.
+	files, sources, emptyDirs, total, err := buildManifest(ctx, opts.Files, os.Stderr)
+	if err != nil {
+		return err
 	}
+	session.Files, session.EmptyDirs, session.TotalSize = files, emptyDirs, total
+	// From here on opts.Files is the expanded list: sendSession hands it to
+	// StreamFiles, whose fileIdx must be each file's Idx in the manifest.
+	opts.Files = sources
+
 	link, err := multisession.Dial(ctx, opts.Relay, opts.RelayPass, code, multiwire.RoleSender, opts.Receivers)
 	if err != nil {
 		return err
