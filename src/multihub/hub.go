@@ -329,7 +329,16 @@ func (hub *Hub) serveSender(roomName string, c Conn, maxReceivers uint8) error {
 			id := binary.LittleEndian.Uint16(f.Payload[:2])
 			log.Debugf("multi room %s: sender kicked member %d", shortRoom(roomName), id)
 
-			hub.dropMember(hubRoom, id, multiwire.LeftQuit, false) // reason is unused when nofifySender = false
+			m := hub.removeMember(hubRoom, id)
+			if m != nil {
+				select {
+				// let the receiver read what's left in queue, then close
+				case m.queue <- nil:
+				//if queue full, kick immediately
+				default:
+					m.conn.Close()
+				}
+			}
 
 		case multiwire.TypeDirect:
 			hub.mu.Lock()
@@ -527,22 +536,18 @@ func (hub *Hub) enqueue(member *member, data []byte) error {
 
 // notifySender = false for a sender's KICK: the sender already knows, so no MEMBER_LEFT goes back for it.
 //
-// For cases: Slow kick (reason 1) nad Receiver disconnected on its own (reason 0)
+// For cases that requires forced removal of Conn: Slow/stalled (reason 1) nad Receiver disconnected on its own (reason 0)
 // We notify the sender with a reason
 //
 // Deletes m from the room. Only the first caller for a given member gets past
 // the check below; later callers return without doing anything.
 func (hub *Hub) dropMember(r *room, id uint16, reason uint8, notifySender bool) {
-	hub.mu.Lock()
-	m, ok := r.members[id]
-	if !ok {
-		// do nothing if member no longer exists
-		// (receiver's read loop or a KICK got there first)
-		hub.mu.Unlock()
+	// remove member from the room on the hub
+	m := hub.removeMember(r, id)
+	if m == nil {
 		return
 	}
-	delete(r.members, id)
-	hub.mu.Unlock()
+
 	if notifySender {
 		log.Debugf("multi room %s: member %d left (%s)", shortRoom(r.name), id, leftReasonName(reason))
 	} else {
@@ -556,6 +561,21 @@ func (hub *Hub) dropMember(r *room, id uint16, reason uint8, notifySender bool) 
 	}
 	payload := binary.LittleEndian.AppendUint16(nil, m.id)
 	_ = r.sender.Send(encode(multiwire.Frame{Type: multiwire.TypeMemberLeft, To: multiwire.SenderID, Payload: append(payload, reason)}))
+}
+
+// helper func to remove the member from a room
+func (hub *Hub) removeMember(r *room, id uint16) *member {
+	hub.mu.Lock()
+	m, ok := r.members[id]
+	if !ok {
+		// do nothing if member no longer exists
+		hub.mu.Unlock()
+		return nil
+	}
+	delete(r.members, id)
+	hub.mu.Unlock()
+
+	return m
 }
 
 // leftReasonName names a MEMBER_LEFT reason for the log.
