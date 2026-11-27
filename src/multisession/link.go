@@ -162,6 +162,15 @@ func (l *Link) get(ctx context.Context, ch <-chan multiwire.Frame) (multiwire.Fr
 	case f := <-ch:
 		return f, nil
 	case <-l.done:
+		// readLoop has stopped, but frames it delivered before stopping may
+		// still be queued (e.g. a reject sent just before the hub closed the
+		// connection). select picks at random when both are ready, so check
+		// the queue once more before reporting the error.
+		select {
+		case f := <-ch:
+			return f, nil
+		default:
+		}
 		l.mu.Lock()
 		defer l.mu.Unlock()
 		return multiwire.Frame{}, l.err
