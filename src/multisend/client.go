@@ -3,12 +3,10 @@ package multisend
 import (
 	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -44,12 +42,12 @@ type controlMessage struct {
 // reported "done".
 func Send(ctx context.Context, opts SendOptions) error {
 	// 255: the receiver count travels as one byte in JOIN.
-	if opts.Receivers < 1 || opts.Receivers > 255 || len(opts.Files) == 0 || len(opts.Files) > 65536 {
+	// The file count limit is checked in buildManifest, after folders are
+	// expanded.
+	if opts.Receivers < 1 || opts.Receivers > 255 || len(opts.Files) == 0 {
 		return errors.New("invalid files or receiver count")
 	}
-	if opts.Approve {
-		return errors.New("multi approval is not yet supported")
-	}
+
 	if opts.ThrottleBps != 0 {
 		return errors.New("multi throttling is not yet supported")
 	}
@@ -68,29 +66,31 @@ func Send(ctx context.Context, opts SendOptions) error {
 	if _, err = rand.Read(session.DataKey); err != nil {
 		return err
 	}
-	// The manifest: Idx is the fileIdx StreamFiles puts in each record, so it
-	// must be the position in opts.Files. Only regular files for now (no
-	// folders); the receiver sees base names only.
-	for i, name := range opts.Files {
-		info, e := os.Stat(name)
-		if e != nil {
-			return e
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("not a regular file: %s", name)
-		}
-		session.Files = append(session.Files, multisession.FileEntry{Idx: i, Path: filepath.Base(name), Size: info.Size()})
-		session.TotalSize += info.Size()
+	// The manifest (manifest.go): files and folders expanded into relative
+	// paths like "photos/2024/a.jpg", plus the empty folders to create.
+	// Built before connecting, so a bad path fails without touching the relay.
+	files, sources, emptyDirs, total, err := buildManifest(ctx, opts.Files, os.Stderr)
+	if err != nil {
+		return err
 	}
+	session.Files, session.EmptyDirs, session.TotalSize = files, emptyDirs, total
+	// From here on opts.Files is the expanded list: sendSession hands it to
+	// StreamFiles, whose fileIdx must be each file's Idx in the manifest.
+	opts.Files = sources
+
 	link, err := multisession.Dial(ctx, opts.Relay, opts.RelayPass, code, multiwire.RoleSender, opts.Receivers)
 	if err != nil {
 		return err
 	}
 	defer link.Close()
+
 	// Cancelling ctx (Ctrl+C, --timeout) closes the link, which unblocks any
-	// pending read or write.
+	// pending read or write for sendSession().
 	stop := context.AfterFunc(ctx, func() { link.Close() })
+
+	// If AfterFunc callback isn't needed (normal route without cancellation), unregisters it
 	defer stop()
+
 	return sendSession(ctx, link, code, session, opts)
 }
 
@@ -114,6 +114,7 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 			opts.Progress(p)
 		}
 	}
+
 	results := make(chan peerResult, 256) // ≥ max receivers, so reporters never block
 	events := make(chan multiwire.Frame, 128)
 	eventErr := make(chan error, 1)
@@ -133,82 +134,41 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 			}
 		}
 	}()
-	ready := map[uint16]bool{}   // authenticated and said "ready"
-	pending := map[uint16]bool{} // joined, PAKE in progress
-
-	// Phase 1: lobby. The hub enforces the receiver cap (room-full), so at
-	// most opts.Receivers can be here at once.
-
-	//This lobby session ends when the timeout waiting for receivers end
-	var lobby context.Context
-	lobby = ctx
+	// Phase 1: lobby (lobby.go). It ends when opts.Receivers receivers are
+	// ready, or when --timeout runs out (it covers only this phase).
+	lobby := ctx
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
 		lobby, cancel = context.WithTimeout(ctx, opts.Timeout)
 		defer cancel()
 	}
+	// Approval prompts end with the lobby, so none is left waiting on stdin.
+	promptCtx, endPrompts := context.WithCancel(lobby)
+	defer endPrompts()
 
-	for len(ready) < opts.Receivers {
-		select {
-		case f := <-events:
-			switch f.Type {
-			case multiwire.TypeMemberJoined:
-				if len(f.Payload) < 2 {
-					return errors.New("invalid member joined")
-				}
-				// MEMBER_JOINED payload: memberID u16 | addrLen u8 | addr
-				id := binary.LittleEndian.Uint16(f.Payload)
-				pending[id] = true
-				go func() {
-					authCtx, cancel := context.WithTimeout(ctx, authTimeout)
-					defer cancel()
-					e := multisession.AuthorizeReceiver(authCtx, link, code, id, session, nil)
-					if e == nil {
-						// The receiver answers "ready" once it has checked the
-						// manifest and can write every file.
-						var frame multiwire.Frame
-						frame, e = link.RecvPeer(ctx, id)
-						if e == nil {
-							var msg struct {
-								Type string `json:"t"`
-							}
-							e = json.Unmarshal(frame.Payload, &msg)
-							if e == nil && msg.Type != "ready" {
-								e = errors.New("receiver did not become ready")
-							}
-						}
-					}
-					results <- peerResult{id, e}
-				}()
-			case multiwire.TypeMemberLeft:
-				if len(f.Payload) >= 2 {
-					id := binary.LittleEndian.Uint16(f.Payload)
-					delete(ready, id)
-					delete(pending, id)
-				}
-			}
-		case result := <-results:
-			delete(pending, result.id)
-			if result.err == nil {
-				ready[result.id] = true
-				report(PeerProgress{ID: result.id, State: "ready"})
-			} else {
-				// Wrong code, refused, or never ready: free its slot.
-				// KICK payload: memberID u16 | reason u8
-				payload := binary.LittleEndian.AppendUint16(nil, result.id)
-				payload = append(payload, 0)
-				_ = link.Send(multiwire.Frame{Type: multiwire.TypeKick, Payload: payload})
-			}
-		case e := <-eventErr:
-			return e
-		case <-lobby.Done():
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-
-			return fmt.Errorf("Timed out waiting for receivers: %d/%d ready", len(ready), opts.Receivers)
-		}
+	lb := &lobbyState{
+		ctx: ctx, link: link, code: code, session: session,
+		events: events, results: results,
+		ready: map[uint16]bool{}, pending: map[uint16]bool{},
 	}
+	if opts.Approve {
+		lb.ap = &approver{ctx: promptCtx, ask: askApproval, refused: map[string]bool{}}
+	}
+	err := lb.run(lobby, eventErr, opts.Receivers, report)
+	endPrompts()
+	if err != nil {
+		return err
+	}
+
+	// kickPending KICKs any receiver still mid-PAKE when the lobby ends.
+	// Normally there is none.
+	// It only happens if a ready receiver left and a new one took its slot just
+	// before the MEMBER_LEFT reaches the sender (the case drainEvents can't see).
+	// That receiver never gets the dataKey, so without the KICK it would only take DATA it can't use until the hub
+	// drops it as stalled.
+	lb.kickPending()
+	ready := lb.ready
+
 	// Phase 2: one watcher per ready receiver. Each ends with exactly one
 	// result: done, fail, or disconnected (MEMBER_LEFT, read error).
 	for id := range ready {

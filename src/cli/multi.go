@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/mattn/go-isatty"
@@ -12,6 +13,7 @@ import (
 	"github.com/schollz/croc/v11/src/multirecv"
 	"github.com/schollz/croc/v11/src/multisend"
 	"github.com/schollz/croc/v11/src/termui"
+	"github.com/schollz/croc/v11/src/utils"
 	"github.com/schollz/progressbar/v3"
 )
 
@@ -84,7 +86,25 @@ func sendMulti(c *cli.Context) error {
 		return errors.New("cần chỉ định ít nhất một file hoặc văn bản (--text) để gửi")
 	}
 
-	return multisend.Send(c.Context, multisend.SendOptions{Files: files, Receivers: receivers, Approve: approve, Timeout: timeout, Relay: c.String("relay"), RelayPass: c.String("pass"), Code: c.String("code")})
+	// Same rule as 1-1 send: on UNIX a --code is visible in the process list,
+	// so it is refused unless classic mode is on or CROC_SECRET is set.
+	envSecret := os.Getenv("CROC_SECRET")
+	classic := utils.Exists(getClassicConfigFile(true))
+	if shouldExitForUnixSendCode(runtime.GOOS, c.IsSet("code"), classic, envSecret) {
+		fmt.Fprint(os.Stderr, `On UNIX systems, to multi-send with a custom code phrase,
+set the environment variable CROC_SECRET instead of --code:
+
+  CROC_SECRET=**** croc send --receivers N file.txt
+
+Or have the code generated:  croc send --receivers N file.txt
+Or enable classic mode:      croc --classic
+
+`)
+		return nil
+	}
+	code := resolveSendSharedSecret(c.String("code"), envSecret)
+
+	return multisend.Send(c.Context, multisend.SendOptions{Files: files, Receivers: receivers, Approve: approve, Timeout: timeout, Relay: c.String("relay"), RelayPass: c.String("pass"), Code: code})
 }
 
 // ============================================================================
@@ -119,16 +139,50 @@ func receiveMulti(c *cli.Context) error {
 	// Set the debug level based on CLI
 	setDebugLevel(c)
 
-	if c.NArg() != 1 {
-		return errors.New("cần chỉ định một code để nhận multi-send")
+	if c.NArg() > 1 {
+		return errors.New("chỉ được chỉ định một code để nhận multi-send")
+	}
+	code, refused := resolveMultiReceiveCode(runtime.GOOS, c.Args().First(), os.Getenv("CROC_SECRET"), utils.Exists(getClassicConfigFile(true)))
+	if refused {
+		fmt.Fprint(os.Stderr, `For security, croc does not accept receive codes on the UNIX
+command line because they can appear in the process list.
+
+Receive with the code in the environment:  CROC_SECRET='****' croc --multi
+Or enter it interactively:                 croc --multi
+Or enable classic mode:                    croc --classic
+
+`)
+		return nil
+	}
+	if code == "" {
+		var err error
+		if code, err = utils.GetInputContext(c.Context, "Enter receive code: "); err != nil {
+			return fmt.Errorf("could not read receive code: %w", err)
+		}
+		if code == "" {
+			return errors.New("cần chỉ định một code để nhận multi-send")
+		}
 	}
 	ui := newRecvUI()
 	err := multirecv.Receive(c.Context, multirecv.ReceiveOptions{
-		Code: c.Args().First(), OutDir: c.String("out"), Relay: c.String("relay"), RelayPass: c.String("pass"),
+		Code: code, OutDir: c.String("out"), Relay: c.String("relay"), RelayPass: c.String("pass"),
 		Name: c.String("name"), Progress: ui.progress, Status: ui.status, Joined: ui.joined,
 	})
 	ui.endLine()
 	return err
+}
+
+// resolveMultiReceiveCode mirrors the 1-1 receive rule: CROC_SECRET wins; a
+// code on the UNIX command line is refused (refused = true) unless classic
+// mode is on. code == "" with refused == false means "ask interactively".
+func resolveMultiReceiveCode(goos, arg, envSecret string, classic bool) (code string, refused bool) {
+	if envSecret != "" {
+		return envSecret, false
+	}
+	if arg != "" && goos != "windows" && !classic {
+		return "", true
+	}
+	return arg, false
 }
 
 // recvUI draws the receiver's output on stderr: status lines, and a progress
