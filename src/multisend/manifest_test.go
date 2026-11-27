@@ -3,6 +3,7 @@ package multisend
 import (
 	"bytes"
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -244,9 +245,7 @@ func TestSendFolderInMemory(t *testing.T) {
 	outs := sendTree(t, "multi:folder", []string{filepath.Join(root, "photos"), filepath.Join(root, "note.txt")}, 2)
 
 	wantFiles := map[string]string{"note.txt": "hi"}
-	for k, v := range tree {
-		wantFiles[k] = v
-	}
+	maps.Copy(wantFiles, tree)
 	wantDirs := []string{"photos", "photos/2024", "photos/empty"}
 	for i, out := range outs {
 		files, dirs := listTree(t, out)

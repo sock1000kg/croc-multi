@@ -63,7 +63,7 @@ func TestApproverRemembersRefused(t *testing.T) {
 	bad := multisession.ReceiverInfo{Name: "bad", Addr: "1.2.3.4"}
 	a.approve(bad)
 	a.lastEnd = time.Time{} // skip the gap: this test is about memory only
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if a.approve(bad) {
 			t.Fatal("refused receiver was approved")
 		}
@@ -124,11 +124,9 @@ func TestApproverSerializesAndSpacesPrompts(t *testing.T) {
 	})
 	var wg sync.WaitGroup
 	for _, name := range []string{"a", "b"} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			a.approve(multisession.ReceiverInfo{Name: name, Addr: "1.2.3.4"})
-		}()
+		})
 	}
 	wg.Wait()
 	if overlap {
@@ -229,7 +227,7 @@ func TestApproveInMemory(t *testing.T) {
 		sent <- sendSession(ctx, sender, code, session, SendOptions{Files: []string{source}, Receivers: 1, Approve: true})
 	}()
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		_, e := multisession.JoinSession(ctx, receiver(), code, "bad")
 		if e == nil || !strings.Contains(e.Error(), "refused") {
 			t.Fatalf("bad attempt %d: got %v, want a refusal", i+1, e)
