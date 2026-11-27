@@ -1,5 +1,5 @@
 // Package multisession is the key exchange of croc's multi-send mode
-// (contracts.md §3; owner: T). Both engines use it: multisend calls
+// (contracts.md §3). Both engines use it: multisend calls
 // AuthorizeReceiver once per receiver, multirecv calls JoinSession.
 //
 // The problem it solves: all receivers must decrypt the SAME DATA stream, so
@@ -26,6 +26,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
+	"unicode"
 
 	"github.com/schollz/croc/v11/src/codephrase"
 	"github.com/schollz/croc/v11/src/crypt"
@@ -166,7 +168,7 @@ func AuthorizeReceiver(ctx context.Context, l *Link, code string, id uint16, ses
 		_ = sendMessage(l, id, message{Type: "reject", Reason: "auth"})
 		return errors.New("receiver authentication failed")
 	}
-	if approve != nil && !approve(ReceiverInfo{ID: id, Name: first.Name}) {
+	if approve != nil && !approve(ReceiverInfo{ID: id, Name: sanitizeName(first.Name)}) {
 		_ = sendMessage(l, id, message{Type: "reject", Reason: "refused"})
 		return errors.New("receiver refused")
 	}
@@ -245,4 +247,30 @@ func JoinSession(ctx context.Context, l *Link, code, name string) (Session, erro
 		return session, errors.New("sender authentication failed")
 	}
 	return v.Session, nil
+}
+
+// sanitizeName makes a receiver's self-chosen name safe to print. The name is
+// untrusted: it arrives in pake1, and the sender reads it in the terminal when
+// deciding whether to approve that receiver.
+func sanitizeName(s string) string {
+	// Drop everything unprintable, so a name cannot control the terminal or
+	// disguise the prompt
+	s = strings.Map(func(r rune) rune {
+		if !unicode.IsPrint(r) {
+			return -1
+		}
+		return r
+	}, s)
+
+	// Cap the length so a long name cannot flood the screen or push the rest
+	// of the prompt out of sight. Count runes, not bytes, so a multi-byte
+	// character is never cut in half.
+	if r := []rune(s); len(r) > 32 {
+		s = string(r[:32])
+	}
+	// Never return nothing: the prompt should still show there is a name here.
+	if s == "" {
+		return "?"
+	}
+	return s
 }
