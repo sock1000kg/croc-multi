@@ -189,7 +189,7 @@ func sendTree(t *testing.T, room string, paths []string, n int) []string {
 				rf = append(rf, multirecv.FileEntry{Idx: f.Idx, Path: f.Path, Size: f.Size})
 			}
 			results <- multirecv.ReceiveStream(ctx, receiverStream{l}, out, multirecv.Session{
-				DataKey: s.DataKey, ChunkSize: s.ChunkSize, Files: rf, EmptyDirs: s.EmptyDirs, TotalSize: s.TotalSize}, nil)
+				DataKey: s.DataKey, ChunkSize: s.ChunkSize, Files: rf, EmptyDirs: s.EmptyDirs, TotalSize: s.TotalSize, DoneToken: s.DoneToken}, nil)
 		}()
 	}
 	for range n {

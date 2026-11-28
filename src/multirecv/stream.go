@@ -26,6 +26,7 @@ type controlMessage struct {
 	Bytes  *int64 `json:"bytes,omitempty"`
 	OK     *bool  `json:"ok,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	Token  []byte `json:"token,omitempty"` // "done" only: Session.DoneToken, proves the done is ours
 }
 
 // Stats is the timing of one received session (phan-cong.md, "Định dạng
@@ -101,7 +102,7 @@ func receiveStream(ctx context.Context, stream Stream, outDir string, session Se
 		if done {
 			stop()
 			ok := true
-			if err = send(controlMessage{Type: "done", OK: &ok, Bytes: &receiver.received}); err != nil {
+			if err = send(controlMessage{Type: "done", OK: &ok, Bytes: &receiver.received, Token: session.DoneToken}); err != nil {
 				return stats, fmt.Errorf("send done: %w", err)
 			}
 			return stats, nil

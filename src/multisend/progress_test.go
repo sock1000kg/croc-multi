@@ -76,7 +76,7 @@ func TestSendReportsProgressEvents(t *testing.T) {
 				return
 			}
 			files := []multirecv.FileEntry{{Idx: 0, Path: s.Files[0].Path, Size: s.Files[0].Size}}
-			results <- multirecv.ReceiveStream(ctx, receiverStream{l}, t.TempDir(), multirecv.Session{DataKey: s.DataKey, ChunkSize: s.ChunkSize, Files: files, TotalSize: s.TotalSize}, nil)
+			results <- multirecv.ReceiveStream(ctx, receiverStream{l}, t.TempDir(), multirecv.Session{DataKey: s.DataKey, ChunkSize: s.ChunkSize, Files: files, TotalSize: s.TotalSize, DoneToken: s.DoneToken}, nil)
 		}()
 	}
 	for range 2 {
@@ -179,7 +179,7 @@ func TestLobbyLimitsWrongCodes(t *testing.T) {
 				return
 			}
 			files := []multirecv.FileEntry{{Idx: 0, Path: s.Files[0].Path, Size: s.Files[0].Size}}
-			done <- multirecv.ReceiveStream(ctx, receiverStream{l}, t.TempDir(), multirecv.Session{DataKey: s.DataKey, ChunkSize: s.ChunkSize, Files: files, TotalSize: s.TotalSize}, nil)
+			done <- multirecv.ReceiveStream(ctx, receiverStream{l}, t.TempDir(), multirecv.Session{DataKey: s.DataKey, ChunkSize: s.ChunkSize, Files: files, TotalSize: s.TotalSize, DoneToken: s.DoneToken}, nil)
 		}()
 		return done
 	}
@@ -242,5 +242,53 @@ func TestLobbyLimitsWrongCodes(t *testing.T) {
 	defer mu.Unlock()
 	if busy == 0 {
 		t.Error("no busy rejection reported")
+	}
+}
+
+// A "done" without the receiver's token (what a hub faking it would send) must
+// count as a failure, not as a finished receiver (review-mat-ma.md, F2).
+func TestSendRejectsDoneWithoutToken(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	connect := memoryRoom(t, ctx, 1)
+	sender, err := connect(multiwire.RoleSender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := bytes.Repeat([]byte("x"), 100000)
+	source := filepath.Join(t.TempDir(), "source")
+	if err = os.WriteFile(source, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	session := multisession.Session{DataKey: bytes.Repeat([]byte{5}, 32), ChunkSize: multiwire.ChunkSize,
+		Files: []multisession.FileEntry{{Idx: 0, Path: "file", Size: int64(len(data))}}, TotalSize: int64(len(data))}
+	sent := make(chan error, 1)
+	go func() {
+		sent <- sendSession(ctx, sender, "room-correct-words", session, SendOptions{Files: []string{source}, Receivers: 1})
+	}()
+	l, err := connect(multiwire.RoleReceiver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = multisession.JoinSession(ctx, l, "room-correct-words", "faker"); err != nil {
+		t.Fatal(err)
+	}
+	send := func(msg string) {
+		if e := l.Send(multiwire.Frame{Type: multiwire.TypeDirect, To: multiwire.SenderID, Payload: []byte(msg)}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	send(`{"t":"ready"}`)
+	send(`{"t":"done","ok":true,"bytes":100000}`)
+	// Keep reading DATA so the hub does not stall on us.
+	go func() {
+		for {
+			if _, e := l.RecvContext(ctx); e != nil {
+				return
+			}
+		}
+	}()
+	if e := <-sent; e == nil || !strings.Contains(e.Error(), "done without a valid token") {
+		t.Fatalf("sendSession = %v, want the missing-token error", e)
 	}
 }
