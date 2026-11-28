@@ -27,16 +27,35 @@ type lobbyState struct {
 
 	events  <-chan multiwire.Frame // MEMBER_JOINED/LEFT, pumped from the link
 	results chan peerResult        // per-receiver goroutines report here
+	report  func(PeerProgress)     // progress events for the CLI (never nil)
 
 	ready   map[uint16]bool // authenticated and said "ready"
 	pending map[uint16]bool // joined, PAKE or approval in progress
+
+	// authFailures counts wrong-code attempts (multisession.ErrAuthFailed).
+	// Each is one online guess at the code's PAKE part, and unlike 1-1 croc a
+	// failed receiver can simply rejoin, so the lobby gives up after
+	// maxAuthFailures (see that constant).
+	authFailures int
 }
+
+// maxAuthFailures is how many wrong-code attempts one session tolerates.
+//
+// Why a cap: a generated code is three EFF short words. The first picks the
+// room (one of 1296, so a room is easy to find); the last two are the PAKE
+// password, 1296² ≈ 1.7 million choices. PAKE allows no offline guessing, but
+// every receiver that joins gets one online guess, and here it can rejoin as
+// often as it likes while the lobby is open (10 minutes by default, forever
+// with --timeout 0). Ten guesses give a success chance of about 6 in a
+// million; then the sender stops and the user starts over with a new code.
+// Real users rarely mistype more than once or twice.
+const maxAuthFailures = 10
 
 // run is the lobby loop. It returns nil when 'want' receivers are ready, the
 // lobby timeout error when lobby ends first, or the error that stopped the
 // link. The hub enforces the receiver cap (room-full), so at most 'want'
 // receivers can be here at once.
-func (lb *lobbyState) run(lobby context.Context, eventErr <-chan error, want int, report func(PeerProgress)) error {
+func (lb *lobbyState) run(lobby context.Context, eventErr <-chan error, want int) error {
 	for {
 		if len(lb.ready) >= want {
 			// Looks full: re-check the events already waiting in queue (see
@@ -55,13 +74,25 @@ func (lb *lobbyState) run(lobby context.Context, eventErr <-chan error, want int
 				return err
 			}
 		case r := <-lb.results:
-			delete(lb.pending, r.id)
-			if r.err == nil {
-				lb.ready[r.id] = true
-				report(PeerProgress{ID: r.id, State: "ready"})
-			} else {
-				// Wrong code, refused, or never ready: free its slot.
-				kick(lb.link, r.id)
+			// Count a wrong code even if that receiver already left: a
+			// guesser that disconnects right after its attempt must not
+			// escape the cap.
+			if errors.Is(r.err, multisession.ErrAuthFailed) {
+				lb.authFailures++
+			}
+			if lb.pending[r.id] {
+				delete(lb.pending, r.id)
+				if r.err == nil {
+					lb.ready[r.id] = true
+					lb.report(PeerProgress{ID: r.id, Name: r.name, State: "ready"})
+				} else {
+					// Wrong code, refused, or never ready: free its slot.
+					kick(lb.link, r.id)
+					lb.report(PeerProgress{ID: r.id, Name: r.name, State: "rejected", Reason: rejectReason(r.err)})
+				}
+			} // else it left mid-PAKE; MEMBER_LEFT already freed and reported it
+			if lb.authFailures >= maxAuthFailures {
+				return fmt.Errorf("stopped after %d wrong-code attempts; send again with a new code", lb.authFailures)
 			}
 		case e := <-eventErr:
 			return e
@@ -84,10 +115,14 @@ func (lb *lobbyState) handleEvent(f multiwire.Frame) error {
 			return err
 		}
 		lb.pending[id] = true
+		lb.report(PeerProgress{ID: id, Addr: host, State: "joined"})
 		lb.startAuth(id, host)
 	case multiwire.TypeMemberLeft:
 		if len(f.Payload) >= 2 {
 			id := binary.LittleEndian.Uint16(f.Payload)
+			if lb.ready[id] || lb.pending[id] {
+				lb.report(PeerProgress{ID: id, State: "left"})
+			}
 			delete(lb.ready, id)
 			delete(lb.pending, id)
 		}
@@ -126,23 +161,46 @@ func (lb *lobbyState) drainEvents() error {
 func (lb *lobbyState) kickPending() {
 	for id := range lb.pending {
 		kick(lb.link, id)
+		lb.report(PeerProgress{ID: id, State: "rejected", Reason: "lobby closed"})
 	}
 }
 
 // startAuth runs PAKE (and the approval prompt, if on) with receiver id in its
 // own goroutine, then waits for its "ready". The outcome goes to results.
+//
+// The hook is always installed, even without --approve: AuthorizeReceiver
+// calls it (in this goroutine) once PAKE has succeeded, which is the only
+// moment the receiver's sanitized name is known. The name is passed on with
+// the result, so the CLI can show who is ready.
 func (lb *lobbyState) startAuth(id uint16, host string) {
-	var hook func(multisession.ReceiverInfo) bool
-	if lb.ap != nil {
-		hook = func(info multisession.ReceiverInfo) bool {
+	go func() {
+		var name string
+		hook := func(info multisession.ReceiverInfo) bool {
 			// AuthorizeReceiver fills in ID and the sanitized Name.
+			name = info.Name
+			if lb.ap == nil {
+				return true
+			}
 			info.Addr = host
 			return lb.ap.approve(info)
 		}
-	}
-	go func() {
-		lb.results <- peerResult{id, authorizeReceiver(lb.ctx, lb.link, lb.code, id, lb.session, hook)}
+		err := authorizeReceiver(lb.ctx, lb.link, lb.code, id, lb.session, hook)
+		lb.results <- peerResult{id: id, name: name, err: err}
 	}()
+}
+
+// rejectReason is a short reason for a lobby rejection, shown by the CLI.
+func rejectReason(err error) string {
+	switch {
+	case errors.Is(err, multisession.ErrAuthFailed):
+		return "wrong code"
+	case errors.Is(err, multisession.ErrRefused):
+		return "refused"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out"
+	default:
+		return err.Error()
+	}
 }
 
 // authorizeReceiver is one receiver's lobby: PAKE within authTimeout, then

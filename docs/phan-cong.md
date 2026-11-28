@@ -49,13 +49,13 @@ D còn làm khung deploy/ + Terraform song song từ ngày 1 (không phụ thu�
 M3 (đo tốc độ) đã đo ngày 21/11, xem mục M3.
 ```
 
-### Trạng thái (cập nhật 21/11/2026)
+### Trạng thái (cập nhật 28/11/2026)
 
 | Mốc | Trạng thái | Ghi chú |
 |---|---|---|
 | M0 | ✅ | `croc send --help` có `--receivers/--approve/--timeout`, `croc --help` có `--multi` |
 | M1a hub | ✅ | `src/multihub`; kiểm chứng bằng `hub_test.go` thay cho `tools/hubdemo` (không viết) |
-| M1b trao khóa | ✅ | L viết `multiwire` + `multisession` trong PR #12; kiểm chứng bằng `session_test.go` thay cho `tools/sessiondemo` (không viết). T vẫn cần review mật mã |
+| M1b trao khóa | ✅ | L viết `multiwire` + `multisession` trong PR #12; kiểm chứng bằng `session_test.go` thay cho `tools/sessiondemo` (không viết). T đã review mật mã 28/11: [`review-mat-ma.md`](review-mat-ma.md) (F1 đoán code không giới hạn: đã sửa; F2–F4: đề xuất) |
 | M1c gửi | ✅ | `multisend.Send`; chỉ file thường, chưa có thư mục/`--approve`/giới hạn tốc độ |
 | M1d nhận | ✅ | `multirecv.Receive`; `TestFullM1InMemory` là bài thử "M1 xong" |
 | M2 relay thật | ✅ | Thử tay một máy 18/11: 3 người nhận, `sha256` khớp, tải lên ≈ 1× file, 1-1 vẫn chạy. Relay cũ: báo đúng "không hỗ trợ multi-send" (sửa 23/11, "Tăng cứng hub") |
@@ -387,6 +387,10 @@ terminal Linux.
 
 ### Giao diện terminal: tiến độ, tốc độ, thông báo vào/ra (T: phía gửi, L: phía nhận)
 
+**Trạng thái:** phía nhận (L) ✅ code xong 25/11; phía gửi (T) ✅ code xong 28/11
+(`src/cli/multi_ui.go`, sự kiện mới trong `src/multisend`). Cả hai còn kiểm chứng trên Azure
+khi chạy lại ma trận MVP.
+
 Phát hiện khi chạy thử qua Azure (`plan.md` mục 11). **T làm phía người gửi** (vùng của N:
 `src/multisend`, phần gửi của `src/cli/multi.go`; báo N trước khi sửa). **L làm phía người nhận**
 (vùng của chính L: `src/multirecv`, phần nhận của `src/cli/multi.go`). Cả hai in kết quả theo
@@ -454,7 +458,12 @@ Người nhận:
 tiến độ của croc 1-1 (có %, tốc độ, thời gian còn lại). **Chưa có:** `src/cli/multi.go` không
 gắn `Progress` nên người gửi không in gì; chưa có trạng thái `joined`/`left`.
 
-**Cách làm, người gửi (T)** (`src/multisend/client.go` + file mới `src/cli/multi_ui.go`):
+**Cách làm, người gửi (T)** (`src/multisend/client.go` + file mới `src/cli/multi_ui.go`) — ✅ code
+xong 28/11. Khác với gợi ý: thêm `Addr` và `Total` vào `PeerProgress` (`contracts.md` mục 5.4);
+thêm trạng thái `rejected` cho người bị loại ở phòng chờ (sai code, bị từ chối, quá hạn); người
+gửi báo `done/failed/left` ngay khi xảy ra (không chờ tải lên xong), nên tắt một người nhận
+giữa chừng thì dòng "mất kết nối" hiện ngay. Đã thử qua relay `localhost` (2 người nhận, một
+người sai code, stderr ra file và ra pseudo-terminal). Các bước gợi ý ban đầu:
 1. Trong `sendSession`, gọi `report` thêm ở `TypeMemberJoined`
    (`State: "joined"`, `Name: <IP>`) và `TypeMemberLeft` (`State: "left"`).
 2. Lấy tên người nhận mà không đổi chữ ký hàm: luôn truyền một hàm `approve` vào

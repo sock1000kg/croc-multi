@@ -181,6 +181,10 @@ những người đã `ready`).
 
 Mối đe dọa là code bị lộ. Không dùng IP để chặn; người gửi tự xử lý:
 - Hạn **10 giây** cho PAKE của mỗi người vào; quá hạn thì `KICK` để không chiếm chỗ.
+- **Tối đa 10 lần sai code mỗi phiên** (`multisession.ErrAuthFailed`, đếm trong `multisend`,
+  kể cả khi người đoán đã ngắt kết nối). Tới 10 thì người gửi dừng và báo gửi lại bằng code
+  mới. Lý do: mỗi lần vào là một lần đoán online, và người bị `KICK` vào lại được ngay
+  ([`review-mat-ma.md`](review-mat-ma.md), F1).
 - Lời nhắc duyệt chỉ hiện **sau khi PAKE thành công**, xếp hàng và hiện từng cái một, cách
   nhau ít nhất 3 giây, kèm số người đang chờ.
 - Trả lời `n` thì nhớ cặp (tên đã làm sạch, IP) cho cả phiên và lần sau tự từ chối, không nhắc.
@@ -215,6 +219,9 @@ Mối đe dọa là code bị lộ. Không dùng IP để chặn; người gửi
   dung được bảo vệ vì mọi thứ quan trọng (vị trí, chỉ số file, băm) nằm **bên trong** bản mã,
   và gửi lặp một khối là vô hại (ghi lại cùng dữ liệu). Hub làm rơi khối thì băm cuối file sẽ
   phát hiện.
+- Giới hạn đã biết (chi tiết ở [`review-mat-ma.md`](review-mat-ma.md)): `ready/progress/done/fail`
+  là JSON rõ nên hub giả được `done` (F2); mọi người nhận có chung `dataKey` nên một người nhận
+  thông đồng với relay có thể giả `DATA` cho người khác (F3).
 - Phase 2 (vòng bù): thêm bản ghi báo đoạn thiếu và phát lại hợp các đoạn thiếu; định dạng
   mở rộng sẽ thêm vào đây khi làm.
 
@@ -348,10 +355,12 @@ type SendOptions struct {
     Progress   func(PeerProgress) // gọi mỗi khi có thay đổi từ từng người nhận
 }
 type PeerProgress struct {
-    ID     uint16
-    Name   string
+    ID     uint16 // 0 = sự kiện của cả phiên (sending, uploaded)
+    Name   string // tên đã làm sạch, có từ "ready"
+    Addr   string // IP, có ở "joined"
     Bytes  int64
-    State  string // joined, ready, receiving, done, failed, left
+    Total  int64  // TotalSize, có ở "sending" và "uploaded"
+    State  string // joined, rejected, ready, receiving, done, failed, left; sending, uploaded
     Reason string
 }
 func Send(ctx context.Context, opts SendOptions) error
@@ -372,6 +381,11 @@ func ReceiveStream(ctx context.Context, stream Stream, outDir string,
     session Session, progress func(int64, int64)) error
 ```
 
+Ý nghĩa từng `State` ghi ở chú thích `PeerProgress` trong `src/multisend/types.go`. `Progress`
+được gọi tuần tự (không bao giờ hai lần cùng lúc) nhưng từ nhiều goroutine, và vài lần gọi có
+thể tới sau khi `Send` trả về. `sending` là lúc đồng hồ đo bắt đầu; `uploaded` mang số byte bản
+mã đã đẩy lên hub (≈ `Total`, không nhân với N).
+
 `Send` trả lỗi `nil` chỉ khi **cả N người nhận đều `done`**; nếu một số người lỗi thì trả lỗi
 liệt kê họ (mã thoát CLI 1, mục 6).
 
@@ -391,12 +405,19 @@ croc --multi [--relay IP:9009] [--pass RELAYPASS] [--out THƯ_MỤC] [--name TÊ
 - `--multi` (người nhận) là cờ bắt buộc; không làm tự nhận dạng code multi.
 - **Mã thoát:** 0 = mọi người nhận xong; 1 = có người nhận lỗi/bị loại/bị từ chối (liệt kê
   trên stderr); 2 = sai cách dùng.
-- **Tiến độ người gửi (stderr), mỗi người một dòng**, cập nhật tại chỗ:
+- **Tiến độ người gửi (stderr)** (`src/cli/multi_ui.go`): một dòng cho mỗi sự kiện (vào, sẵn
+  sàng, bị loại, xong, mất kết nối) và **một** dòng tiến độ chung cho mọi người, vẽ lại tại chỗ
+  mỗi 500 ms. Không phải terminal thì không dùng `\r`, in dòng tiến độ 5 giây một lần. Cuối phiên
+  in tóm tắt và các dòng `bench:` (định dạng chung ở `phan-cong.md`, mục "Giao diện terminal"):
 
 ```
-[2] An    80%  ready
-[3] Bình  100% done
-[4] Chi   ...  waiting
+[2] 203.0.113.5 đã vào, đang xác thực
+[2] binh-laptop (203.0.113.5) sẵn sàng (1/2)
+[3] an-pc (198.51.100.7) sẵn sàng (2/2), bắt đầu gửi
+[2] binh-laptop 64% 23.6 MB/s | [3] an-pc 61% 23.1 MB/s | tải lên 23.8 MB/s
+[3] an-pc (198.51.100.7) xong: 1.38 GiB trong 61.84 s (192.1 Mbit/s)
+Tóm tắt: 2/2 xong. Tải lên 1.38 GiB (1.001x) trong 63.12 s (188.2 Mbit/s); chậm nhất [2]
+bench: role=send n=2 done=2 bytes=1485169722 uploaded=1486955012 ratio=1.001 seconds=63.12 mbps=188.2
 ```
 
 - **Tên hiển thị** do người nhận tự đặt (`--name`, mặc định hostname), gửi trong thông điệp

@@ -104,7 +104,11 @@ Or enable classic mode:      croc --classic
 	}
 	code := resolveSendSharedSecret(c.String("code"), envSecret)
 
-	return multisend.Send(c.Context, multisend.SendOptions{Files: files, Receivers: receivers, Approve: approve, Timeout: timeout, Relay: c.String("relay"), RelayPass: c.String("pass"), Code: code})
+	ui := newSendUI(receivers)
+	ui.startTicker()
+	err := multisend.Send(c.Context, multisend.SendOptions{Files: files, Receivers: receivers, Approve: approve, Timeout: timeout, Relay: c.String("relay"), RelayPass: c.String("pass"), Code: code, Progress: ui.update})
+	ui.finish(err)
+	return err
 }
 
 // ============================================================================
