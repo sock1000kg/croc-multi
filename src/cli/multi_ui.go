@@ -87,9 +87,7 @@ func newSendUI(want int) *sendUI {
 // startTicker launches the redraw ticker. finish stops it.
 func (u *sendUI) startTicker() {
 	u.quit = make(chan struct{})
-	u.ticker.Add(1)
-	go func() {
-		defer u.ticker.Done()
+	u.ticker.Go(func() {
 		t := time.NewTicker(sendUITick)
 		defer t.Stop()
 		for {
@@ -102,7 +100,7 @@ func (u *sendUI) startTicker() {
 				u.mu.Unlock()
 			}
 		}
-	}()
+	})
 }
 
 // update is multisend.SendOptions.Progress.
