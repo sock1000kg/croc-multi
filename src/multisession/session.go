@@ -53,6 +53,14 @@ type Session struct {
 	TotalSize int64       `json:"totalSize"`
 }
 
+// ErrAuthFailed means a receiver's key confirmation did not match: it used a
+// wrong code. Each one is an online guess at the code, so the sender counts
+// them (multisend caps them per session); other lobby failures are not guesses.
+var ErrAuthFailed = errors.New("receiver authentication failed")
+
+// ErrRefused means the sender's approve callback said no.
+var ErrRefused = errors.New("receiver refused")
+
 // ReceiverInfo is shown to the sender's approve callback (Phase 2 approval).
 type ReceiverInfo struct {
 	ID   uint16
@@ -88,6 +96,14 @@ func sendMessage(l *Link, id uint16, v any) error {
 		return e
 	}
 	return l.Send(multiwire.Frame{Type: multiwire.TypeDirect, To: id, Payload: b})
+}
+
+// Reject tells receiver id that the sender will not run PAKE with it, e.g.
+// "busy" when the sender is limiting wrong-code attempts. The receiver's
+// JoinSession reads it as the answer to its pake1 and fails with
+// "session rejected: <reason>".
+func Reject(l *Link, id uint16, reason string) error {
+	return sendMessage(l, id, message{Type: "reject", Reason: reason})
 }
 
 // recvMessage reads the next DIRECT from member id as a message, turning a
@@ -166,11 +182,11 @@ func AuthorizeReceiver(ctx context.Context, l *Link, code string, id uint16, ses
 	// A receiver with the wrong code derives different keys, so its tag fails.
 	if confirmation.Type != "pake-confirm" || !pakekey.Confirm(keys.ConfirmationA, confirmation.Tag) {
 		_ = sendMessage(l, id, message{Type: "reject", Reason: "auth"})
-		return errors.New("receiver authentication failed")
+		return ErrAuthFailed
 	}
 	if approve != nil && !approve(ReceiverInfo{ID: id, Name: sanitizeName(first.Name)}) {
 		_ = sendMessage(l, id, message{Type: "reject", Reason: "refused"})
-		return errors.New("receiver refused")
+		return ErrRefused
 	}
 	// Tag B lets the receiver check that we know the code too.
 	plain, e := json.Marshal(sessionMessage{Type: "session", Confirm: keys.ConfirmationB, Session: session})

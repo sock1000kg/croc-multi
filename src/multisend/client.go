@@ -23,9 +23,13 @@ const authTimeout = 10 * time.Second
 // in the lobby, whether the receiver authenticated and became ready; during
 // the transfer, whether it finished (err == nil) or failed.
 type peerResult struct {
-	id  uint16
-	err error
+	id   uint16
+	name string // sanitized receiver name, set by lobby results once PAKE passed
+	err  error
 }
+
+// errDisconnected is a ready receiver's result when the hub says it left.
+var errDisconnected = errors.New("disconnected")
 
 // controlMessage is the JSON a receiver sends in DIRECT frames after it has
 // the session: ready, progress, done or fail (see multirecv/stream.go).
@@ -106,6 +110,8 @@ func Send(ctx context.Context, opts SendOptions) error {
 // All goroutines report on the results channel, so only this function's
 // goroutine touches the ready/pending maps.
 func sendSession(ctx context.Context, link *multisession.Link, code string, session multisession.Session, opts SendOptions) error {
+	// report serializes every Progress call: the lobby, the per-receiver
+	// watchers and this goroutine all report.
 	var progressMu sync.Mutex
 	report := func(p PeerProgress) {
 		if opts.Progress != nil {
@@ -148,13 +154,14 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 
 	lb := &lobbyState{
 		ctx: ctx, link: link, code: code, session: session,
-		events: events, results: results,
+		events: events, results: results, report: report,
 		ready: map[uint16]bool{}, pending: map[uint16]bool{},
+		guesses: newGuessLimiter(),
 	}
 	if opts.Approve {
 		lb.ap = &approver{ctx: promptCtx, ask: askApproval, refused: map[string]bool{}}
 	}
-	err := lb.run(lobby, eventErr, opts.Receivers, report)
+	err := lb.run(lobby, eventErr, opts.Receivers)
 	endPrompts()
 	if err != nil {
 		return err
@@ -169,23 +176,42 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 	lb.kickPending()
 	ready := lb.ready
 
+	// "sending" starts the CLI's clock (phan-cong.md, "Định dạng chung"). It
+	// goes out before the watchers start, so any done/failed/left the CLI
+	// sees belongs to the transfer, not to the lobby.
+	report(PeerProgress{State: "sending", Total: session.TotalSize})
+
 	// Phase 2: one watcher per ready receiver. Each ends with exactly one
-	// result: done, fail, or disconnected (MEMBER_LEFT, read error).
+	// result: done, fail, or disconnected (MEMBER_LEFT, read error). It also
+	// reports that end right away, so the CLI shows a receiver that dropped
+	// out while the upload is still running, and times each receiver on its
+	// own "done".
+	finish := func(id uint16, e error) {
+		switch {
+		case e == nil:
+			report(PeerProgress{ID: id, State: "done"})
+		case errors.Is(e, errDisconnected):
+			report(PeerProgress{ID: id, State: "left", Reason: e.Error()})
+		default:
+			report(PeerProgress{ID: id, State: "failed", Reason: e.Error()})
+		}
+		results <- peerResult{id: id, err: e}
+	}
 	for id := range ready {
 		go func(id uint16) {
 			for {
 				f, e := link.RecvPeer(ctx, id)
 				if e != nil {
-					results <- peerResult{id, e}
+					finish(id, e)
 					return
 				}
 				if f.Type == multiwire.TypeMemberLeft {
-					results <- peerResult{id, errors.New("disconnected")}
+					finish(id, errDisconnected)
 					return
 				}
 				var m controlMessage
 				if e = json.Unmarshal(f.Payload, &m); e != nil {
-					results <- peerResult{id, e}
+					finish(id, e)
 					return
 				}
 				switch m.Type {
@@ -194,11 +220,13 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 				case "done":
 					if !m.OK {
 						e = errors.New("receiver did not finish")
+					} else {
+						report(PeerProgress{ID: id, Bytes: m.Bytes, State: "receiving"})
 					}
-					results <- peerResult{id, e}
+					finish(id, e)
 					return
 				case "fail":
-					results <- peerResult{id, fmt.Errorf("receiver failed: %s", m.Reason)}
+					finish(id, fmt.Errorf("receiver failed: %s", m.Reason))
 					return
 				}
 			}
@@ -207,10 +235,13 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 	// The upload: each record is encrypted once and sent once as DATA; the
 	// hub copies it to every receiver. sent is the "uploaded" byte count.
 	sent, err := StreamFiles(ctx, opts.Files, session.DataKey, func(data []byte) error { return link.Send(multiwire.Frame{Type: multiwire.TypeData, Payload: data}) })
+	report(PeerProgress{State: "uploaded", Bytes: sent, Total: session.TotalSize})
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Multi-send uploaded %d bytes\n", sent)
+	if opts.Progress == nil {
+		fmt.Fprintf(os.Stderr, "Multi-send uploaded %d bytes\n", sent)
+	}
 	// Phase 3: wait for every ready receiver's result. Results from receivers
 	// that were never ready (late lobby PAKEs) are ignored.
 	var failures []error
@@ -221,11 +252,8 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 				continue
 			}
 			delete(ready, r.id)
-			if r.err != nil {
+			if r.err != nil { // already reported by finish
 				failures = append(failures, fmt.Errorf("receiver %d: %w", r.id, r.err))
-				report(PeerProgress{ID: r.id, State: "failed", Reason: r.err.Error()})
-			} else {
-				report(PeerProgress{ID: r.id, State: "done"})
 			}
 		case <-events: // MEMBER_LEFT also reaches the watcher; nothing to do here
 		case e := <-eventErr:
