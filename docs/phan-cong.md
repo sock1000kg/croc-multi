@@ -55,7 +55,7 @@ M3 (đo tốc độ) đã đo ngày 21/11, xem mục M3.
 |---|---|---|
 | M0 | ✅ | `croc send --help` có `--receivers/--approve/--timeout`, `croc --help` có `--multi` |
 | M1a hub | ✅ | `src/multihub`; kiểm chứng bằng `hub_test.go` thay cho `tools/hubdemo` (không viết) |
-| M1b trao khóa | ✅ | L viết `multiwire` + `multisession` trong PR #12; kiểm chứng bằng `session_test.go` thay cho `tools/sessiondemo` (không viết). T đã review mật mã 28/11: [`review-mat-ma.md`](review-mat-ma.md) (F1 đoán code không giới hạn: đã sửa; F2–F4: đề xuất) |
+| M1b trao khóa | ✅ | L viết `multiwire` + `multisession` trong PR #12; kiểm chứng bằng `session_test.go` thay cho `tools/sessiondemo` (không viết). T đã review mật mã 28/11: [`review-mat-ma.md`](review-mat-ma.md) (F1 đoán code không giới hạn: đã sửa; F2–F4: đề xuất). Review cuối 28/11: cùng file, mục "Review cuối" |
 | M1c gửi | ✅ | `multisend.Send`; chỉ file thường, chưa có thư mục/`--approve`/giới hạn tốc độ |
 | M1d nhận | ✅ | `multirecv.Receive`; `TestFullM1InMemory` là bài thử "M1 xong" |
 | M2 relay thật | ✅ | Thử tay một máy 18/11: 3 người nhận, `sha256` khớp, tải lên ≈ 1× file, 1-1 vẫn chạy. Relay cũ: báo đúng "không hỗ trợ multi-send" (sửa 23/11, "Tăng cứng hub") |

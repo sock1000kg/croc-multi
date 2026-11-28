@@ -13,6 +13,7 @@ import (
 	"github.com/schollz/croc/v11/src/multisend"
 	"github.com/schollz/croc/v11/src/termui"
 	"golang.org/x/term"
+	"golang.org/x/text/width"
 )
 
 // sendUI draws the multi-send sender's output on stderr (phan-cong.md,
@@ -115,7 +116,7 @@ func (u *sendUI) update(p multisend.PeerProgress) {
 	switch p.State {
 	case "sending":
 		u.start, u.total = now, p.Total
-		u.drawProgress()
+		u.event(fmt.Sprintf("Bắt đầu gửi %s cho %d người nhận", formatSize(p.Total), u.readyCount()))
 		return
 	case "uploaded":
 		u.uploaded = p.Bytes
@@ -146,11 +147,9 @@ func (u *sendUI) update(p multisend.PeerProgress) {
 		u.event(fmt.Sprintf("[%d] %s bị loại: %s", v.id, v.label(), rejectReasonVI(p.Reason)))
 	case "ready":
 		v.state, v.ready = "ready", true
-		msg := fmt.Sprintf("[%d] %s sẵn sàng (%d/%d)", v.id, v.label(), u.readyCount(), u.want)
-		if u.readyCount() >= u.want {
-			msg += ", bắt đầu gửi"
-		}
-		u.event(msg)
+		// Not "starting" even at want/want: the lobby may still apply a
+		// queued leave and keep waiting. "sending" says when it starts.
+		u.event(fmt.Sprintf("[%d] %s sẵn sàng (%d/%d)", v.id, v.label(), u.readyCount(), u.want))
 	case "receiving":
 		u.sample(v, p.Bytes, now)
 		if v.state == "ready" {
@@ -230,8 +229,8 @@ func (u *sendUI) drawProgress() {
 		}
 		return
 	}
-	if width := u.width(); width > 1 {
-		line = truncateRunes(line, width-1)
+	if cols := u.width(); cols > 1 {
+		line = truncateWidth(line, cols-1)
 	}
 	fmt.Fprint(u.w, "\r\x1b[K"+line)
 	u.lineOpen = true
@@ -409,6 +408,8 @@ func rejectReasonVI(reason string) string {
 		return "quá hạn xác thực"
 	case "lobby closed":
 		return "phòng chờ đã đóng"
+	case "busy":
+		return "sai code quá nhiều lần gần đây, tạm không nhận người mới"
 	}
 	return reason
 }
@@ -457,15 +458,38 @@ func benchToken(name string) string {
 	return b.String()
 }
 
-// truncateRunes cuts s to at most n runes, so the progress line never wraps
-// (a wrapped line cannot be redrawn with \r).
-func truncateRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
+// truncateWidth cuts s to at most cols terminal columns, so the progress
+// line never wraps (a wrapped line cannot be redrawn with \r). East Asian
+// wide and fullwidth runes take two columns.
+func truncateWidth(s string, cols int) string {
+	if displayWidth(s) <= cols {
 		return s
 	}
-	if n <= 1 {
-		return string(r[:n])
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := runeWidth(r)
+		if used+w > cols-1 { // keep one column for "…"
+			break
+		}
+		b.WriteRune(r)
+		used += w
 	}
-	return string(r[:n-1]) + "…"
+	return b.String() + "…"
+}
+
+func displayWidth(s string) int {
+	n := 0
+	for _, r := range s {
+		n += runeWidth(r)
+	}
+	return n
+}
+
+func runeWidth(r rune) int {
+	switch width.LookupRune(r).Kind() {
+	case width.EastAsianWide, width.EastAsianFullwidth:
+		return 2
+	}
+	return 1
 }

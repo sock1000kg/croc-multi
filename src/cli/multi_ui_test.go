@@ -48,7 +48,8 @@ func TestSendUIEventsAndBenchLines(t *testing.T) {
 		"[2] 203.0.113.5 đã vào, đang xác thực\n",
 		"[2] binh laptop (203.0.113.5) sẵn sàng (1/2)\n",
 		"[4] 192.0.2.9 bị loại: sai code\n",
-		"[3] an-pc (198.51.100.7) sẵn sàng (2/2), bắt đầu gửi\n",
+		"[3] an-pc (198.51.100.7) sẵn sàng (2/2)\n",
+		"Bắt đầu gửi 1.38 GiB cho 2 người nhận\n",
 		"[2] binh laptop 50% 24.8 MB/s | [3] an-pc xong | tải lên 24.8 MB/s\n",
 		"[3] an-pc (198.51.100.7) xong: 1.38 GiB trong 61.84 s (192.1 Mbit/s)\n",
 		"[2] binh laptop (203.0.113.5) xong: 1.38 GiB trong 63.12 s (188.2 Mbit/s)\n",
@@ -116,11 +117,15 @@ func TestSendUILobbyOnly(t *testing.T) {
 	}
 }
 
-func TestTruncateRunes(t *testing.T) {
-	if got := truncateRunes("tải lên 23.8 MB/s", 7); got != "tải lê…" {
-		t.Errorf("truncateRunes = %q", got)
-	}
-	if got := truncateRunes("abc", 5); got != "abc" {
-		t.Errorf("truncateRunes = %q", got)
+func TestTruncateWidth(t *testing.T) {
+	for _, tt := range []struct{ in, want string }{
+		{"tải lên 23.8 MB/s", "tải lê…"}, // Vietnamese letters are one column
+		{"abc", "abc"},
+		{"中文名字abc", "中文名…"}, // wide runes take two columns
+	} {
+		got := truncateWidth(tt.in, 7)
+		if got != tt.want || displayWidth(got) > 7 {
+			t.Errorf("truncateWidth(%q, 7) = %q (width %d), want %q", tt.in, got, displayWidth(got), tt.want)
+		}
 	}
 }

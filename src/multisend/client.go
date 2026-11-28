@@ -156,6 +156,7 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 		ctx: ctx, link: link, code: code, session: session,
 		events: events, results: results, report: report,
 		ready: map[uint16]bool{}, pending: map[uint16]bool{},
+		guesses: newGuessLimiter(),
 	}
 	if opts.Approve {
 		lb.ap = &approver{ctx: promptCtx, ask: askApproval, refused: map[string]bool{}}
@@ -174,6 +175,11 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 	// drops it as stalled.
 	lb.kickPending()
 	ready := lb.ready
+
+	// "sending" starts the CLI's clock (phan-cong.md, "Định dạng chung"). It
+	// goes out before the watchers start, so any done/failed/left the CLI
+	// sees belongs to the transfer, not to the lobby.
+	report(PeerProgress{State: "sending", Total: session.TotalSize})
 
 	// Phase 2: one watcher per ready receiver. Each ends with exactly one
 	// result: done, fail, or disconnected (MEMBER_LEFT, read error). It also
@@ -228,8 +234,6 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 	}
 	// The upload: each record is encrypted once and sent once as DATA; the
 	// hub copies it to every receiver. sent is the "uploaded" byte count.
-	// "sending" starts the CLI's clock (phan-cong.md, "Định dạng chung").
-	report(PeerProgress{State: "sending", Total: session.TotalSize})
 	sent, err := StreamFiles(ctx, opts.Files, session.DataKey, func(data []byte) error { return link.Send(multiwire.Frame{Type: multiwire.TypeData, Payload: data}) })
 	report(PeerProgress{State: "uploaded", Bytes: sent, Total: session.TotalSize})
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/schollz/croc/v11/src/multisession"
 	"github.com/schollz/croc/v11/src/multiwire"
@@ -32,24 +33,58 @@ type lobbyState struct {
 	ready   map[uint16]bool // authenticated and said "ready"
 	pending map[uint16]bool // joined, PAKE or approval in progress
 
-	// authFailures counts wrong-code attempts (multisession.ErrAuthFailed).
-	// Each is one online guess at the code's PAKE part, and unlike 1-1 croc a
-	// failed receiver can simply rejoin, so the lobby gives up after
-	// maxAuthFailures (see that constant).
-	authFailures int
+	// guesses limits wrong-code attempts (multisession.ErrAuthFailed); see
+	// guessLimiter.
+	guesses *guessLimiter
 }
 
-// maxAuthFailures is how many wrong-code attempts one session tolerates.
+// guessLimiter is a token bucket over wrong codes.
 //
-// Why a cap: a generated code is three EFF short words. The first picks the
-// room (one of 1296, so a room is easy to find); the last two are the PAKE
+// Why: a generated code is three EFF short words. The first picks the room
+// (one of 1296, so a room is easy to find); the last two are the PAKE
 // password, 1296² ≈ 1.7 million choices. PAKE allows no offline guessing, but
-// every receiver that joins gets one online guess, and here it can rejoin as
-// often as it likes while the lobby is open (10 minutes by default, forever
-// with --timeout 0). Ten guesses give a success chance of about 6 in a
-// million; then the sender stops and the user starts over with a new code.
-// Real users rarely mistype more than once or twice.
-const maxAuthFailures = 10
+// every receiver that joins gets one online guess, and unlike 1-1 croc a
+// kicked receiver can rejoin at once, for as long as the lobby is open (10
+// minutes by default, forever with --timeout 0).
+//
+// The bucket allows a burst of guessBurst wrong codes (real typos, even in a
+// large class behind one NAT address), then one more per guessRefill. While
+// it is empty, a new joiner is rejected as "busy" before any PAKE, so it gets
+// no guess at all. Receivers already ready are never affected and the session
+// goes on: a guesser can only delay new joiners, not end the send. A 10-minute
+// lobby then allows at most 10 + 20 = 30 guesses (≈ 2·10⁻⁵ chance).
+// Not per host on purpose: a class behind one NAT shares an address, and a
+// guesser can use many.
+type guessLimiter struct {
+	tokens float64
+	last   time.Time
+	now    func() time.Time
+}
+
+// Defaults for guessLimiter; variables so tests can shorten the refill.
+var (
+	guessBurst  = 10
+	guessRefill = 30 * time.Second
+)
+
+func newGuessLimiter() *guessLimiter {
+	return &guessLimiter{tokens: float64(guessBurst), last: time.Now(), now: time.Now}
+}
+
+// allow reports whether a new joiner may try the code now.
+func (g *guessLimiter) allow() bool {
+	now := g.now()
+	g.tokens = min(float64(guessBurst), g.tokens+float64(now.Sub(g.last))/float64(guessRefill))
+	g.last = now
+	return g.tokens >= 1
+}
+
+// fail spends one token for a wrong code. It may go below zero: PAKEs that
+// were already running when the bucket emptied still count.
+func (g *guessLimiter) fail() {
+	g.allow() // refill up to now first
+	g.tokens--
+}
 
 // run is the lobby loop. It returns nil when 'want' receivers are ready, the
 // lobby timeout error when lobby ends first, or the error that stopped the
@@ -76,9 +111,9 @@ func (lb *lobbyState) run(lobby context.Context, eventErr <-chan error, want int
 		case r := <-lb.results:
 			// Count a wrong code even if that receiver already left: a
 			// guesser that disconnects right after its attempt must not
-			// escape the cap.
+			// escape the limit.
 			if errors.Is(r.err, multisession.ErrAuthFailed) {
-				lb.authFailures++
+				lb.guesses.fail()
 			}
 			if lb.pending[r.id] {
 				delete(lb.pending, r.id)
@@ -91,9 +126,6 @@ func (lb *lobbyState) run(lobby context.Context, eventErr <-chan error, want int
 					lb.report(PeerProgress{ID: r.id, Name: r.name, State: "rejected", Reason: rejectReason(r.err)})
 				}
 			} // else it left mid-PAKE; MEMBER_LEFT already freed and reported it
-			if lb.authFailures >= maxAuthFailures {
-				return fmt.Errorf("stopped after %d wrong-code attempts; send again with a new code", lb.authFailures)
-			}
 		case e := <-eventErr:
 			return e
 		case <-lobby.Done():
@@ -114,8 +146,16 @@ func (lb *lobbyState) handleEvent(f multiwire.Frame) error {
 		if err != nil {
 			return err
 		}
-		lb.pending[id] = true
 		lb.report(PeerProgress{ID: id, Addr: host, State: "joined"})
+		if !lb.guesses.allow() {
+			// Too many wrong codes lately: no PAKE, so no guess. The
+			// receiver reads the reject as the answer to its pake1.
+			_ = multisession.Reject(lb.link, id, "busy")
+			kick(lb.link, id)
+			lb.report(PeerProgress{ID: id, Addr: host, State: "rejected", Reason: "busy"})
+			return nil
+		}
+		lb.pending[id] = true
 		lb.startAuth(id, host)
 	case multiwire.TypeMemberLeft:
 		if len(f.Payload) >= 2 {

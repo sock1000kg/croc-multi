@@ -98,6 +98,14 @@ func sendMessage(l *Link, id uint16, v any) error {
 	return l.Send(multiwire.Frame{Type: multiwire.TypeDirect, To: id, Payload: b})
 }
 
+// Reject tells receiver id that the sender will not run PAKE with it, e.g.
+// "busy" when the sender is limiting wrong-code attempts. The receiver's
+// JoinSession reads it as the answer to its pake1 and fails with
+// "session rejected: <reason>".
+func Reject(l *Link, id uint16, reason string) error {
+	return sendMessage(l, id, message{Type: "reject", Reason: reason})
+}
+
 // recvMessage reads the next DIRECT from member id as a message, turning a
 // "reject" into an error.
 func recvMessage(ctx context.Context, l *Link, id uint16) (message, error) {

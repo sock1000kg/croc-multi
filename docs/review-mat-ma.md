@@ -41,17 +41,19 @@ liên tục trong suốt phòng chờ (mặc định 10 phút, vô hạn với `
 chỗ song song. Ở vài lần thử mỗi giây mỗi chỗ, xác suất trúng trong một phiên đã lên tới mức
 phần trăm.
 
-**Đã sửa:**
-- `multisession.ErrAuthFailed` (lỗi riêng khi thẻ xác nhận sai) và `multisession.ErrRefused`.
-- `multisend` đếm số lần sai code mỗi phiên. Tới `maxAuthFailures = 10` thì người gửi dừng với
-  lỗi "stopped after 10 wrong-code attempts; send again with a new code". Xác suất trúng còn
-  ≈ 10 / 1,7 triệu ≈ 6·10⁻⁶.
-- Vẫn đếm cả khi kẻ đoán ngắt kết nối ngay sau lần thử (khi `MEMBER_LEFT` tới trước kết quả
-  PAKE), để không né được bộ đếm.
-- Test: `TestLobbyStopsAfterTooManyWrongCodes` (`src/multisend/progress_test.go`).
-
-Đánh đổi: ai biết tên phòng có thể cố tình đoán sai 10 lần để làm hỏng phiên. Đây là kiểu từ
-chối dịch vụ mà họ vốn đã làm được (chiếm hết chỗ), và người dùng chỉ cần gửi lại với code mới.
+**Đã sửa** (token bucket trên số lần sai code, `guessLimiter` trong `src/multisend/lobby.go`):
+- `multisession.ErrAuthFailed` (lỗi riêng khi thẻ xác nhận sai), `multisession.ErrRefused` và
+  `multisession.Reject`.
+- Cho phép sai liên tiếp **10 lần** (gõ nhầm thật, kể cả cả lớp sau một NAT), sau đó hồi **1 lượt
+  mỗi 30 giây**. Khi hết lượt, người mới vào nhận `reject` `busy` rồi bị `KICK` **trước** PAKE,
+  nên không có lần đoán nào. Phòng chờ 10 phút cho tối đa 10 + 20 = 30 lần đoán (≈ 2·10⁻⁵).
+- Người đã sẵn sàng không bị ảnh hưởng và phiên **không bị dừng**: kẻ đoán chỉ làm chậm người mới
+  vào, không chấm dứt được việc gửi. Bản đầu của PR dừng cả phiên sau 10 lần sai; review cuối chỉ
+  ra đó là lỗ từ chối dịch vụ (ai biết từ đầu của code cũng làm hỏng được phiên), nên đổi sang
+  cách này.
+- Không giới hạn theo IP: cả lớp sau NAT chung một IP, còn kẻ đoán thì dùng được nhiều IP.
+- Vẫn đếm cả khi kẻ đoán ngắt kết nối ngay sau lần thử (`MEMBER_LEFT` tới trước kết quả PAKE).
+- Test: `TestLobbyLimitsWrongCodes` (`src/multisend/progress_test.go`).
 
 ### F2. Thông điệp điều khiển sau PAKE không được xác thực — **trung bình, đề xuất**
 
@@ -89,3 +91,20 @@ chuyển tên vào một trường mã hóa bằng khóa cặp sau PAKE.
   nằm trong bản mã.
 - `reject` không được xác thực, nên relay có thể giả để làm hỏng một lần vào. Relay vốn có thể
   làm rơi khung, nên đây không phải quyền mới.
+
+## Review cuối (28/11, việc tuần 3 của T)
+
+Rà lỗi logic trên `src/multihub`, `src/multisession`, `src/multisend`, `src/multirecv`,
+`src/multiwire`, `src/cli/multi.go`, `src/cli/multi_ui.go`, `src/tcp/multi_room.go`.
+
+| Phát hiện | Mức | Xử lý |
+|---|---|---|
+| Giới hạn 10 lần sai code dừng cả phiên (lỗ từ chối dịch vụ, lớp đông gõ nhầm cũng dừng) | quan trọng | **Đã sửa:** token bucket, xem F1 |
+| Người nhận rớt giữa lúc đóng phòng chờ và lúc bắt đầu tải lên bị hiện là "rời phòng chờ", thiếu trong tóm tắt và dòng `bench:` | quan trọng | **Đã sửa:** báo `sending` trước khi chạy goroutine theo dõi |
+| "bắt đầu gửi" in ở lần `ready` thứ N dù phòng chờ có thể còn mở | nhỏ | **Đã sửa:** in ở sự kiện `sending` |
+| Dòng tiến độ cắt theo số rune nên vẫn tràn dòng với tên chữ rộng (CJK) | nhỏ | **Đã sửa:** cắt theo độ rộng hiển thị (`golang.org/x/text/width`) |
+| `croc send --receivers N --text ...` qua được kiểm tra rồi báo lỗi khó hiểu | có từ trước | **Đã sửa:** báo rõ "multi-send chưa hỗ trợ --text" |
+| Với `--approve`, dòng sự kiện có thể chen vào giữa lời nhắc y/N | nhỏ | **Chưa sửa:** cần phối hợp lời nhắc (vùng của N) với UI; lời nhắc vẫn đúng người, chỉ bị xuống dòng |
+
+Đã kiểm: hub không dùng lại mã thành viên (`src/multihub/hub.go`, mã chỉ tăng), nên kết quả PAKE
+đến muộn không bị gán nhầm cho người mới.

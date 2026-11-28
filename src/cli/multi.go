@@ -82,8 +82,11 @@ func sendMulti(c *cli.Context) error {
 	timeout := c.Duration("timeout")
 	files := c.Args().Slice()
 
-	if len(files) == 0 && c.String("text") == "" {
-		return errors.New("cần chỉ định ít nhất một file hoặc văn bản (--text) để gửi")
+	if c.String("text") != "" {
+		return errors.New("multi-send chưa hỗ trợ --text; hãy gửi file")
+	}
+	if len(files) == 0 {
+		return errors.New("cần chỉ định ít nhất một file để gửi")
 	}
 
 	// Same rule as 1-1 send: on UNIX a --code is visible in the process list,

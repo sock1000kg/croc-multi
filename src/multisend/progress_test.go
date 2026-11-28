@@ -123,8 +123,15 @@ func TestSendReportsProgressEvents(t *testing.T) {
 }
 
 // A wrong code is an online guess, and a rejected receiver can rejoin at
-// once, so the lobby must stop after maxAuthFailures of them.
-func TestLobbyStopsAfterTooManyWrongCodes(t *testing.T) {
+// once. After guessBurst wrong codes, new joiners are turned away as "busy"
+// without a PAKE (no guess), while a receiver that is already ready is not
+// affected; once the bucket refills, a receiver with the right code gets in
+// and the send completes.
+func TestLobbyLimitsWrongCodes(t *testing.T) {
+	oldRefill := guessRefill
+	guessRefill = 1500 * time.Millisecond
+	defer func() { guessRefill = oldRefill }()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	connect := memoryRoom(t, ctx, 2)
@@ -132,41 +139,64 @@ func TestLobbyStopsAfterTooManyWrongCodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := multisession.Session{DataKey: bytes.Repeat([]byte{3}, 32), ChunkSize: multiwire.ChunkSize}
+	data := bytes.Repeat([]byte("guess limit\n"), 1000)
+	source := filepath.Join(t.TempDir(), "source")
+	if err = os.WriteFile(source, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	session := multisession.Session{DataKey: bytes.Repeat([]byte{3}, 32), ChunkSize: multiwire.ChunkSize,
+		Files: []multisession.FileEntry{{Idx: 0, Path: "file", Size: int64(len(data))}}, TotalSize: int64(len(data))}
+
+	firstReady := make(chan struct{})
+	var once sync.Once
 	var mu sync.Mutex
-	rejected := 0
+	busy := 0
 	sent := make(chan error, 1)
 	go func() {
-		sent <- sendSession(ctx, sender, "room-correct-words", session, SendOptions{Files: []string{"unused"}, Receivers: 2,
+		sent <- sendSession(ctx, sender, "room-correct-words", session, SendOptions{Files: []string{source}, Receivers: 2,
 			Progress: func(p PeerProgress) {
-				if p.State == "rejected" && p.Reason == "wrong code" {
+				switch {
+				case p.State == "ready":
+					once.Do(func() { close(firstReady) })
+				case p.State == "rejected" && p.Reason == "busy":
 					mu.Lock()
-					rejected++
+					busy++
 					mu.Unlock()
 				}
 			}})
 	}()
+	receive := func() <-chan error {
+		done := make(chan error, 1)
+		l, e := connect(multiwire.RoleReceiver)
+		if e != nil {
+			done <- e
+			return done
+		}
+		go func() {
+			s, e := multisession.JoinSession(ctx, l, "room-correct-words", "real")
+			if e != nil {
+				done <- e
+				return
+			}
+			files := []multirecv.FileEntry{{Idx: 0, Path: s.Files[0].Path, Size: s.Files[0].Size}}
+			done <- multirecv.ReceiveStream(ctx, receiverStream{l}, t.TempDir(), multirecv.Session{DataKey: s.DataKey, ChunkSize: s.ChunkSize, Files: files, TotalSize: s.TotalSize}, nil)
+		}()
+		return done
+	}
+	first := receive()
+	select {
+	case <-firstReady:
+	case e := <-first:
+		t.Fatalf("first receiver: %v", e)
+	case <-ctx.Done():
+		t.Fatal("first receiver never ready")
+	}
+
+	// Guess until the sender turns us away without a PAKE.
 	guesses := 0
 	for {
-		select {
-		case e := <-sent:
-			if e == nil || !strings.Contains(e.Error(), "wrong-code attempts") {
-				t.Fatalf("sendSession = %v, want the wrong-code limit", e)
-			}
-			if guesses < maxAuthFailures {
-				t.Fatalf("stopped after %d guesses, want %d", guesses, maxAuthFailures)
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			// A guesser that hangs up at once may be reported as "left"
-			// instead, so only check that rejections are reported at all.
-			if rejected == 0 {
-				t.Error("no rejected events")
-			}
-			return
-		case <-ctx.Done():
-			t.Fatalf("lobby still open after %d wrong codes", guesses)
-		default:
+		if ctx.Err() != nil {
+			t.Fatalf("never turned away after %d wrong codes", guesses)
 		}
 		l, e := connect(multiwire.RoleReceiver)
 		if e != nil { // room-full while a kick is in flight
@@ -180,8 +210,37 @@ func TestLobbyStopsAfterTooManyWrongCodes(t *testing.T) {
 		if e == nil {
 			t.Fatal("a wrong code joined the session")
 		}
+		if strings.Contains(e.Error(), "rejected: busy") {
+			break
+		}
 		if strings.Contains(e.Error(), "rejected: auth") {
 			guesses++
 		}
+	}
+	// The burst, plus at most one token refilled while guessing.
+	if guesses < guessBurst || guesses > guessBurst+1 {
+		t.Errorf("%d wrong codes before busy, want %d", guesses, guessBurst)
+	}
+	select {
+	case e := <-sent:
+		t.Fatalf("wrong codes ended the session: %v", e)
+	default:
+	}
+
+	// After a refill, the right code gets in and everyone finishes.
+	time.Sleep(guessRefill + 300*time.Millisecond)
+	second := receive()
+	for _, ch := range []<-chan error{first, second} {
+		if e := <-ch; e != nil {
+			t.Fatalf("receiver: %v", e)
+		}
+	}
+	if e := <-sent; e != nil {
+		t.Fatalf("sendSession = %v", e)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if busy == 0 {
+		t.Error("no busy rejection reported")
 	}
 }

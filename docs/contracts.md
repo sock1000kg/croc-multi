@@ -172,7 +172,7 @@ Người gửi gửi `session`, **mã hóa bằng khóa cặp** (`crypt.Encrypt(
 | `progress` | nhận → gửi | `{"files":n,"bytes":m}`, gửi tối đa 2 lần/giây (để N hiện tiến độ từng người) |
 | `done` | nhận → gửi | `{"ok":true,"bytes":m}` khi xong và băm khớp |
 | `fail` | nhận → gửi | `{"reason":"hash-mismatch" \| "disk-full" \| "write-error" \| "..."}` |
-| `reject` | gửi → nhận | `{"reason":"auth" \| "refused" \| "locked"}` |
+| `reject` | gửi → nhận | `{"reason":"auth" \| "refused" \| "locked" \| "busy"}` |
 
 Người gửi bắt đầu truyền khi đủ `N` người đã `ready` hoặc khi người dùng nhấn Enter (chỉ với
 những người đã `ready`).
@@ -181,10 +181,10 @@ những người đã `ready`).
 
 Mối đe dọa là code bị lộ. Không dùng IP để chặn; người gửi tự xử lý:
 - Hạn **10 giây** cho PAKE của mỗi người vào; quá hạn thì `KICK` để không chiếm chỗ.
-- **Tối đa 10 lần sai code mỗi phiên** (`multisession.ErrAuthFailed`, đếm trong `multisend`,
-  kể cả khi người đoán đã ngắt kết nối). Tới 10 thì người gửi dừng và báo gửi lại bằng code
-  mới. Lý do: mỗi lần vào là một lần đoán online, và người bị `KICK` vào lại được ngay
-  ([`review-mat-ma.md`](review-mat-ma.md), F1).
+- **Giới hạn đoán code** (token bucket, `src/multisend/lobby.go`): cho sai 10 lần liên tiếp, sau
+  đó hồi 1 lượt mỗi 30 giây; hết lượt thì người mới vào nhận `{"t":"reject","reason":"busy"}` và
+  bị `KICK` trước PAKE. Đếm cả khi người đoán đã ngắt kết nối. Người đã sẵn sàng không bị ảnh
+  hưởng, phiên không dừng ([`review-mat-ma.md`](review-mat-ma.md), F1).
 - Lời nhắc duyệt chỉ hiện **sau khi PAKE thành công**, xếp hàng và hiện từng cái một, cách
   nhau ít nhất 3 giây, kèm số người đang chờ.
 - Trả lời `n` thì nhớ cặp (tên đã làm sạch, IP) cho cả phiên và lần sau tự từ chối, không nhắc.
