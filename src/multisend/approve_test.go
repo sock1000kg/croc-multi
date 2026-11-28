@@ -241,7 +241,7 @@ func TestApproveInMemory(t *testing.T) {
 	}
 	out := t.TempDir()
 	files := []multirecv.FileEntry{{Idx: s.Files[0].Idx, Path: s.Files[0].Path, Size: s.Files[0].Size}}
-	if e = multirecv.ReceiveStream(ctx, receiverStream{l}, out, multirecv.Session{DataKey: s.DataKey, ChunkSize: s.ChunkSize, Files: files, TotalSize: s.TotalSize}, nil); e != nil {
+	if e = multirecv.ReceiveStream(ctx, receiverStream{l}, out, multirecv.Session{DataKey: s.DataKey, ChunkSize: s.ChunkSize, Files: files, TotalSize: s.TotalSize, DoneToken: s.DoneToken}, nil); e != nil {
 		t.Fatal(e)
 	}
 	if e = <-sent; e != nil {

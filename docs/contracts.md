@@ -156,13 +156,18 @@ Người gửi gửi `session`, **mã hóa bằng khóa cặp** (`crypt.Encrypt(
  "chunkSize":32768,
  "files":[{"idx":0,"path":"docs/a.pdf","size":123456}],
  "emptyDirs":["docs/empty"],
- "totalSize":123456}
+ "totalSize":123456,
+ "doneToken":"<32 byte, riêng cho người nhận này, base64>"}
 ```
 
 - `path` là đường dẫn tương đối, dấu `/`. Người nhận chuẩn hóa bằng `receivefs.Normalize` và
   **từ chối** đường dẫn thoát thư mục, đường dẫn tuyệt đối, tên thiết bị Windows.
 - `dataKey` là **một khóa cho cả phiên**, giống nhau cho mọi người nhận.
 - Người nhận kiểm tra `confirm` (xác nhận người gửi biết code phrase) trước khi tin `session`.
+- `doneToken` = `multisession.DoneToken(dataKey, memberID)` =
+  `HMAC-SHA256(HKDF-SHA256(dataKey, info="croc-multi done-token v1"), memberID u16 LE)`. Mỗi người
+  nhận một giá trị riêng, chỉ đi trong `session` đã mã hóa, nên hub không biết. Người nhận gửi
+  lại nó trong `done` (mục 3.4).
 
 ### 3.4 Các thông điệp khác
 
@@ -170,7 +175,7 @@ Người gửi gửi `session`, **mã hóa bằng khóa cặp** (`crypt.Encrypt(
 |---|---|---|
 | `ready` | nhận → gửi | Đã kiểm tra thư mục đích, dung lượng, đường dẫn; sẵn sàng nhận |
 | `progress` | nhận → gửi | `{"files":n,"bytes":m}`, gửi tối đa 2 lần/giây (để N hiện tiến độ từng người) |
-| `done` | nhận → gửi | `{"ok":true,"bytes":m}` khi xong và băm khớp |
+| `done` | nhận → gửi | `{"ok":true,"bytes":m,"token":"<doneToken>"}` khi xong và băm khớp. Người gửi chỉ tính là xong khi `token` đúng (`multisession.CheckDoneToken`), nếu không thì coi người đó lỗi |
 | `fail` | nhận → gửi | `{"reason":"hash-mismatch" \| "disk-full" \| "write-error" \| "..."}` |
 | `reject` | gửi → nhận | `{"reason":"auth" \| "refused" \| "locked" \| "busy"}` |
 
@@ -220,8 +225,9 @@ Mối đe dọa là code bị lộ. Không dùng IP để chặn; người gửi
   và gửi lặp một khối là vô hại (ghi lại cùng dữ liệu). Hub làm rơi khối thì băm cuối file sẽ
   phát hiện.
 - Giới hạn đã biết (chi tiết ở [`review-mat-ma.md`](review-mat-ma.md)): `ready/progress/done/fail`
-  là JSON rõ nên hub giả được `done` (F2); mọi người nhận có chung `dataKey` nên một người nhận
-  thông đồng với relay có thể giả `DATA` cho người khác (F3).
+  là JSON rõ, nhưng `done` mang `doneToken` nên hub không giả được (F2, đã xử lý); mọi người nhận có
+  chung `dataKey` nên một người nhận thông đồng với relay có thể giả `DATA` hoặc `done` cho người
+  khác (F3).
 - Phase 2 (vòng bù): thêm bản ghi báo đoạn thiếu và phát lại hợp các đoạn thiếu; định dạng
   mở rộng sẽ thêm vào đây khi làm.
 
