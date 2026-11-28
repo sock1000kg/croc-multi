@@ -38,7 +38,12 @@ type controlMessage struct {
 	OK     bool   `json:"ok"`
 	Bytes  int64  `json:"bytes"`
 	Reason string `json:"reason"`
+	Token  []byte `json:"token"` // "done" only: the receiver's Session.DoneToken
 }
+
+// errBadDoneToken is a "done" without the receiver's token: it did not come
+// from that receiver (e.g. a hub faking it), so it is not counted as done.
+var errBadDoneToken = errors.New("done without a valid token")
 
 // Send is the whole sender flow behind `croc send --receivers N FILE...`:
 // build the manifest and a fresh dataKey, join the relay's hub as sender,
@@ -220,6 +225,8 @@ func sendSession(ctx context.Context, link *multisession.Link, code string, sess
 				case "done":
 					if !m.OK {
 						e = errors.New("receiver did not finish")
+					} else if !multisession.CheckDoneToken(session.DataKey, id, m.Token) {
+						e = errBadDoneToken
 					} else {
 						report(PeerProgress{ID: id, Bytes: m.Bytes, State: "receiving"})
 					}

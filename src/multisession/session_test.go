@@ -63,3 +63,19 @@ func TestSessionAuthentication(t *testing.T) {
 		}
 	}
 }
+
+// The done token is per receiver and per session, so a "done" cannot be
+// copied from one receiver to another or from another session.
+func TestDoneToken(t *testing.T) {
+	key := bytes.Repeat([]byte{1}, 32)
+	a, b := multisession.DoneToken(key, 2), multisession.DoneToken(key, 3)
+	if len(a) != 32 || bytes.Equal(a, b) {
+		t.Fatalf("tokens for two receivers: %x, %x", a, b)
+	}
+	if !multisession.CheckDoneToken(key, 2, a) || multisession.CheckDoneToken(key, 3, a) || multisession.CheckDoneToken(key, 2, nil) {
+		t.Fatal("CheckDoneToken accepted a wrong token or refused the right one")
+	}
+	if multisession.CheckDoneToken(bytes.Repeat([]byte{2}, 32), 2, a) {
+		t.Fatal("a token from another session was accepted")
+	}
+}

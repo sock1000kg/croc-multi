@@ -12,8 +12,9 @@ thực được tin là người được mời.
 ## Kết luận
 
 Thiết kế mật mã đúng cho mục tiêu MVP: không ai thiếu code đọc được manifest hay dữ liệu, và
-dữ liệu bị sửa trên đường đi đều bị phát hiện. Một lỗ hổng mức cao (đoán code không giới hạn)
-**đã sửa trong PR này**. Hai điểm cần đổi hợp đồng được ghi lại làm đề xuất (mục "Phát hiện").
+dữ liệu bị sửa trên đường đi đều bị phát hiện. Lỗ hổng mức cao F1 (đoán code không giới hạn) đã
+sửa. F2 (hub giả `done`) đã làm trong một PR riêng vì phải đổi hợp đồng. F3 và F4 mức thấp, để
+sau MVP (mục "Phát hiện").
 
 ## Những gì đã kiểm tra và đúng
 
@@ -55,19 +56,24 @@ phần trăm.
 - Vẫn đếm cả khi kẻ đoán ngắt kết nối ngay sau lần thử (`MEMBER_LEFT` tới trước kết quả PAKE).
 - Test: `TestLobbyLimitsWrongCodes` (`src/multisend/progress_test.go`).
 
-### F2. Thông điệp điều khiển sau PAKE không được xác thực — **trung bình, đề xuất**
+### F2. Thông điệp điều khiển sau PAKE không được xác thực — **trung bình, đã làm (PR riêng, chờ cả nhóm đồng ý theo `contracts.md` mục 9)**
 
 `ready`, `progress`, `done`, `fail` (người nhận → người gửi) là JSON rõ trong `DIRECT`. Hub có
 thể giả `done` cho một người nhận, chẳng hạn không chuyển `DATA` cho người đó mà vẫn báo "xong".
 Khi đó người gửi in "2/2 xong" và thoát với mã 0 dù người nhận không có file. Bí mật dữ liệu
 không bị ảnh hưởng; chỉ báo cáo giao nhận của người gửi là không đáng tin trước một relay xấu.
 
-**Đề xuất** (đổi hợp đồng mục 3.4, chạm `multirecv` của L và `multisend` của N nên cần đồng ý
-theo mục 9): `done` kèm
-`proof = HMAC-SHA256(dataKey, "croc-multi done v1" ‖ memberID u16 ‖ sha256 của từng file)`.
-Người gửi kiểm bằng `hmac.Equal`. Hub không có `dataKey` nên không giả được, và `memberID` ngăn
-chép bằng chứng của người này sang người khác. Chưa làm trong PR này để không phá tương thích
-ngay trước lượt chạy ma trận đầu-cuối.
+**Cách xử lý** (đổi hợp đồng mục 3.3–3.4, chạm `multirecv` của L và `multisend` của N, nên đi
+bằng PR riêng để cả nhóm đồng ý theo mục 9): người gửi đặt
+`doneToken = HMAC-SHA256(HKDF-SHA256(dataKey, "croc-multi done-token v1"), memberID)` vào
+`session` của từng người (đã mã hóa bằng khóa cặp). Người nhận gửi lại token này trong `done`,
+và người gửi kiểm bằng `hmac.Equal`. Hub không đọc được `session` nên không có token; `memberID`
+ngăn chép token của người này sang người khác. Người gửi tự tính lại token, không lưu trạng thái.
+HKDF tách khóa này khỏi việc dùng `dataKey` làm khóa AES. Test: `TestDoneToken`,
+`TestSendRejectsDoneWithoutToken`.
+
+**Không tương thích ngược:** người gửi mới từ chối `done` của bản người nhận cũ (thiếu `token`).
+Mọi người cần build lại từ cùng `main` trước lượt chạy ma trận.
 
 ### F3. Khóa nhóm: người nhận này có thể giả dữ liệu cho người nhận khác — **thấp, giới hạn thiết kế**
 

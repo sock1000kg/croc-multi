@@ -21,10 +21,14 @@ package multisession
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"unicode"
@@ -33,6 +37,7 @@ import (
 	"github.com/schollz/croc/v11/src/crypt"
 	"github.com/schollz/croc/v11/src/multiwire"
 	"github.com/schollz/croc/v11/src/pakekey"
+	"golang.org/x/crypto/hkdf"
 )
 
 // FileEntry is one file in the manifest. Idx is the fileIdx used in DATA
@@ -51,6 +56,35 @@ type Session struct {
 	Files     []FileEntry `json:"files"`
 	EmptyDirs []string    `json:"emptyDirs"`
 	TotalSize int64       `json:"totalSize"`
+	// DoneToken is this receiver's own proof of completion: it echoes it in
+	// "done", and the sender accepts "done" only with the right token. The
+	// hub never sees it (the session is encrypted with the pair key), so it
+	// cannot fake a "done" (docs/review-mat-ma.md, F2). Set per receiver by
+	// AuthorizeReceiver; see DoneToken.
+	DoneToken []byte `json:"doneToken"`
+}
+
+// doneTokenInfo separates the done-token key from the dataKey's use as the
+// AES-GCM key for DATA.
+const doneTokenInfo = "croc-multi done-token v1"
+
+// DoneToken is receiver id's done token for a session with dataKey:
+// HMAC-SHA256(HKDF-SHA256(dataKey, info=doneTokenInfo), id as u16 LE).
+// The sender can recompute it at any time, so it keeps no per-receiver state.
+func DoneToken(dataKey []byte, id uint16) []byte {
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(hkdf.New(sha256.New, dataKey, nil, []byte(doneTokenInfo)), key); err != nil {
+		panic(err) // cannot happen: 32 bytes is far below HKDF's limit
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(binary.LittleEndian.AppendUint16(nil, id))
+	return mac.Sum(nil)
+}
+
+// CheckDoneToken reports, in constant time, whether token is receiver id's
+// done token.
+func CheckDoneToken(dataKey []byte, id uint16, token []byte) bool {
+	return hmac.Equal(DoneToken(dataKey, id), token)
 }
 
 // ErrAuthFailed means a receiver's key confirmation did not match: it used a
@@ -188,6 +222,9 @@ func AuthorizeReceiver(ctx context.Context, l *Link, code string, id uint16, ses
 		_ = sendMessage(l, id, message{Type: "reject", Reason: "refused"})
 		return ErrRefused
 	}
+	// session is our own copy, so the per-receiver token stays with this
+	// receiver's message.
+	session.DoneToken = DoneToken(session.DataKey, id)
 	// Tag B lets the receiver check that we know the code too.
 	plain, e := json.Marshal(sessionMessage{Type: "session", Confirm: keys.ConfirmationB, Session: session})
 	if e != nil {
